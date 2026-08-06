@@ -1,0 +1,35 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+description = "Namix 单应用：扁平 MVC + models/services"
+
+[[bin]]
+name = "app"
+path = "src/main.rs"
+
+[[bin]]
+name = "toasty"
+path = "src/bin/toasty.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[dependencies]
+namix = { workspace = true, features = ["sqlite", "pages"] }
+tokio = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toasty = { version = "0.9", default-features = false, features = ["sqlite", "serde", "jiff"] }
+toasty-cli = "0.9"
+jiff = "0.2"
+sha2 = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+hmac = "0.12"
+rand = "0.8"
+
+[build-dependencies]
+namix-build = { workspace = true }

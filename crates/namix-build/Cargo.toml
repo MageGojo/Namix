@@ -1,0 +1,8 @@
+[package]
+name = "namix-build"
+version.workspace = true
+edition.workspace = true
+description = "各应用 build.rs 复用：按 namix.toml 同步业务目录与 mod"
+
+[dependencies]
+toml = "0.8"

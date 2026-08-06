@@ -1,0 +1,39 @@
+# Save as /srv/APP_A/dist/data/namix.toml. This file is shared by every
+# release and is never overwritten by `nx build` or `nx update`.
+
+[database]
+enabled = true
+driver = "sqlite"
+url = "sqlite:./storage/namix.db"
+# To use PostgreSQL/MySQL, enable the matching Namix Cargo feature and supply
+# DATABASE_URL through the service environment.
+push_schema = false             # migrations run before the rolling release
+
+[features]
+pages = true
+action_seal = true
+
+[apps.main]
+# The public TLS edge terminates HTTPS and forwards only to this loopback port.
+bind = "127.0.0.1:3000"
+https = false
+http3 = false
+lan = false
+hosts = ["APP_A.example"]
+
+[security]
+environment = "production"
+csrf = true
+csrf_trusted_origins = ["https://APP_A.example"]
+trusted_proxies = ["127.0.0.1"]
+tls_terminated_by_proxy = true
+# Do not put session_secret here. Provide NAMIX_SESSION_SECRET through the
+# service environment or a permission-600 env file.
+
+[security.rate_limit]
+enabled = true
+window_seconds = 60
+login = 5
+registration = 3
+action = 60
+upload = 10

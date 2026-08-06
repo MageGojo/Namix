@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/namix",
+    "crates/namix-http",
+    "crates/namix-macros",
+    "crates/namix-build",
+    "crates/namix-seal",
+    "crates/nx",
+    "app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+namix = { path = "crates/namix" }
+namix-http = { path = "crates/namix-http" }
+namix-macros = { path = "crates/namix-macros" }
+namix-build = { path = "crates/namix-build" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+thiserror = "2"
+anyhow = "1"
+
+# `nx build` 默认用此 profile：优先体积
+[profile.release-min]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

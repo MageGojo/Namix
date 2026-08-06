@@ -1,0 +1,33 @@
+{
+  "name": "namix-app-views",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build:wasm": "bash scripts/build-seal-wasm.sh",
+    "build": "npm run build:wasm && vite build && vite build --ssr src/views/_ssr.tsx --outDir public/build/ssr --emptyOutDir",
+    "build:client": "npm run build:wasm && vite build",
+    "build:ssr": "vite build --ssr src/views/_ssr.tsx --outDir public/build/ssr --emptyOutDir",
+    "build:release": "npm run build && cargo build --profile release-min --bin app",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "nprogress": "^0.2.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@types/node": "^26.1.2",
+    "@types/nprogress": "^0.2.3",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^4.5.2",
+    "javascript-obfuscator": "^5.5.0",
+    "tailwindcss": "^4.1.8",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  }
+}

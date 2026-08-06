@@ -1,0 +1,336 @@
+//! Browser CSRF / Origin protection.
+//!
+//! The middleware uses a double-submit token and requires a same-origin
+//! `Origin` header for browser state-changing requests.  Bearer-only API
+//! requests stay stateless and are therefore not subject to the cookie check.
+
+use rand::RngCore;
+
+use super::content_type::ContentType;
+use super::middleware::{MiddlewareFn, Next, wrap_middleware};
+use super::request::Request;
+use super::response::{CookieOptions, Response};
+use http::{Method, StatusCode};
+
+/// Request-scoped CSRF token.  It is populated by [`CsrfProtection`], so a
+/// classic server-rendered form can render [`hidden_field`].
+#[derive(Clone, Debug)]
+pub struct CsrfToken(String);
+
+impl CsrfToken {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Browser CSRF policy.
+#[derive(Clone, Debug)]
+pub struct CsrfConfig {
+    pub enabled: bool,
+    pub cookie_name: String,
+    pub header_name: String,
+    pub form_field: String,
+    /// Complete origins such as `https://app.example.test`.  When empty, the
+    /// request `Host` header is used and both HTTP and HTTPS are accepted.
+    pub trusted_origins: Vec<String>,
+    pub secure_cookie: bool,
+}
+
+impl Default for CsrfConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cookie_name: "namix_csrf".into(),
+            header_name: "x-csrf-token".into(),
+            form_field: "_csrf".into(),
+            trusted_origins: Vec::new(),
+            secure_cookie: false,
+        }
+    }
+}
+
+/// Stateful-free CSRF middleware.  The token lives in a readable SameSite
+/// cookie and must be echoed through a form field or request header.
+#[derive(Clone, Debug)]
+pub struct CsrfProtection {
+    config: CsrfConfig,
+}
+
+impl CsrfProtection {
+    pub fn new(config: CsrfConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn config(&self) -> &CsrfConfig {
+        &self.config
+    }
+
+    /// Return a regular Namix middleware function so it can be installed on
+    /// `Boot`, `Router`, or one specific `Route`.
+    pub fn middleware(self) -> MiddlewareFn {
+        wrap_middleware(move |req, next| {
+            let protection = self.clone();
+            async move { protection.handle(req, next).await }
+        })
+    }
+
+    async fn handle(&self, mut req: Request, next: Next) -> Response {
+        if !self.config.enabled {
+            return next.run(req).await;
+        }
+
+        let cookie_token = req.cookie(&self.config.cookie_name).map(str::to_string);
+        let token = cookie_token.clone().unwrap_or_else(new_token);
+        req.set(CsrfToken(token.clone()));
+
+        if requires_protection(&req, &self.config)
+            && (!origin_allowed(&req, &self.config) || !token_matches(&req, &self.config, &token))
+        {
+            return rejected(&req);
+        }
+
+        let mut response = next.run(req).await;
+        if cookie_token.is_none() {
+            response.set_cookie_with_options(
+                &self.config.cookie_name,
+                &token,
+                CookieOptions::csrf(self.config.secure_cookie),
+            );
+        }
+        response
+    }
+}
+
+/// Render the hidden input required by a classic HTML form.
+pub fn hidden_field(req: &Request) -> String {
+    let value = req
+        .get::<CsrfToken>()
+        .map(CsrfToken::as_str)
+        .unwrap_or_default();
+    format!("<input type=\"hidden\" name=\"_csrf\" value=\"{value}\">")
+}
+
+/// Return the current token for templates which render their own input.
+pub fn token(req: &Request) -> Option<&str> {
+    req.get::<CsrfToken>().map(CsrfToken::as_str)
+}
+
+fn requires_protection(req: &Request, config: &CsrfConfig) -> bool {
+    if matches!(
+        req.method(),
+        &Method::GET | &Method::HEAD | &Method::OPTIONS | &Method::TRACE
+    ) {
+        return false;
+    }
+
+    // Token-authenticated, cookie-free API clients do not share browser
+    // cookies and must remain usable without first visiting a HTML page.
+    let bearer_only = req.bearer().is_some() && req.header("cookie").is_none();
+    if bearer_only {
+        return false;
+    }
+
+    // Browser navigations/fetches supply Origin or Fetch Metadata.  A request
+    // with a session/CSRF cookie is also treated as browser state.
+    req.header("origin").is_some()
+        || req.header("sec-fetch-site").is_some()
+        || req.cookie(&config.cookie_name).is_some()
+        || req.cookie("namix_session").is_some()
+}
+
+fn origin_allowed(req: &Request, config: &CsrfConfig) -> bool {
+    let Some(origin) = req.header("origin") else {
+        return false;
+    };
+    let origin = normalize_origin(origin);
+    let Some(origin) = origin else {
+        return false;
+    };
+
+    if !config.trusted_origins.is_empty() {
+        return config
+            .trusted_origins
+            .iter()
+            .filter_map(|candidate| normalize_origin(candidate))
+            .any(|candidate| candidate == origin);
+    }
+
+    let Some(host) = req.header("host") else {
+        return false;
+    };
+    origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
+}
+
+fn normalize_origin(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('/');
+    let (scheme, authority) = value.split_once("://")?;
+    if !matches!(scheme, "http" | "https")
+        || authority.is_empty()
+        || authority.contains('/')
+        || authority.contains('?')
+        || authority.contains('#')
+        || authority.contains('@')
+    {
+        return None;
+    }
+    Some(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.to_ascii_lowercase()
+    ))
+}
+
+fn token_matches(req: &Request, config: &CsrfConfig, expected: &str) -> bool {
+    let supplied = req
+        .header(&config.header_name)
+        .map(str::to_string)
+        .or_else(|| form_value(req.body_str(), &config.form_field));
+    supplied.is_some_and(|value| constant_time_eq(expected.as_bytes(), value.as_bytes()))
+}
+
+fn form_value(raw: &str, field: &str) -> Option<String> {
+    raw.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (super::request::query_decode_pub(key) == field)
+            .then(|| super::request::query_decode_pub(value))
+    })
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut diff = left.len() ^ right.len();
+    let len = left.len().max(right.len());
+    for i in 0..len {
+        diff |= usize::from(*left.get(i).unwrap_or(&0) ^ *right.get(i).unwrap_or(&0));
+    }
+    diff == 0
+}
+
+fn new_token() -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut random = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut random);
+    random
+        .iter()
+        .map(|byte| ALPHABET[usize::from(byte & 0x3f)] as char)
+        .collect()
+}
+
+fn rejected(req: &Request) -> Response {
+    let body = serde_json::json!({
+        "error": "csrf validation failed",
+        "message": "csrf validation failed",
+        "errors": { "_": "csrf validation failed" },
+    })
+    .to_string();
+    if req.path().starts_with("/api/")
+        || req
+            .header("accept")
+            .is_some_and(|accept| accept.contains("application/json"))
+    {
+        Response::new(StatusCode::FORBIDDEN, ContentType::Json, body)
+    } else {
+        Response::new(
+            StatusCode::FORBIDDEN,
+            ContentType::Html,
+            "<!doctype html><title>Forbidden</title><main><h1>Forbidden</h1><p>csrf validation failed</p></main>",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
+
+    use super::*;
+
+    fn req(method: Method, headers: &[(&str, &str)], body: &str) -> Request {
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        Request::new(
+            method,
+            Uri::from_static("/profile"),
+            map,
+            Bytes::from(body.to_owned()),
+        )
+    }
+
+    async fn ok(_req: Request) -> Response {
+        Response::new(StatusCode::OK, ContentType::Text, "ok")
+    }
+
+    #[tokio::test]
+    async fn safe_request_issues_readable_csrf_cookie() {
+        let guard = CsrfProtection::new(CsrfConfig::default());
+        let response = guard
+            .handle(
+                req(Method::GET, &[("host", "app.test")], ""),
+                Next::new(
+                    std::sync::Arc::new(vec![]),
+                    0,
+                    std::sync::Arc::new(|r| Box::pin(ok(r))),
+                ),
+            )
+            .await;
+        let cookie = response
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(cookie.contains("namix_csrf="));
+        assert!(!cookie.contains("HttpOnly"));
+    }
+
+    #[tokio::test]
+    async fn mutation_requires_same_origin_and_matching_token() {
+        let guard = CsrfProtection::new(CsrfConfig::default());
+        let response = guard
+            .handle(
+                req(
+                    Method::POST,
+                    &[
+                        ("host", "app.test"),
+                        ("origin", "https://attacker.test"),
+                        ("cookie", "namix_csrf=token"),
+                    ],
+                    "_csrf=token",
+                ),
+                Next::new(
+                    std::sync::Arc::new(vec![]),
+                    0,
+                    std::sync::Arc::new(|r| Box::pin(ok(r))),
+                ),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = guard
+            .handle(
+                req(
+                    Method::POST,
+                    &[
+                        ("host", "app.test"),
+                        ("origin", "https://app.test"),
+                        ("cookie", "namix_csrf=token"),
+                    ],
+                    "_csrf=token",
+                ),
+                Next::new(
+                    std::sync::Arc::new(vec![]),
+                    0,
+                    std::sync::Arc::new(|r| Box::pin(ok(r))),
+                ),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}

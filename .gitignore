@@ -1,0 +1,25 @@
+.DS_Store
+.idea/
+*.log
+
+# build / deps
+/target/
+**/target/
+/dist/
+app/node_modules/
+app/public/build/
+app/dist/
+
+# local runtime data
+/storage/
+app/storage/
+app/database/migrations/
+app/database/snapshots/
+app/database/history.toml
+data/
+
+# local secrets / env
+.env
+.env.*
+*.pem
+*.key

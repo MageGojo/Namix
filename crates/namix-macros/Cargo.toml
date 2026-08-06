@@ -1,0 +1,13 @@
+[package]
+name = "namix-macros"
+version.workspace = true
+edition.workspace = true
+description = "Namix 过程宏：route / routes"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }

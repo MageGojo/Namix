@@ -1,0 +1,37 @@
+[package]
+name = "namix"
+version.workspace = true
+edition.workspace = true
+description = "Namix 框架门面：业务侧只依赖本 crate"
+
+[features]
+# 默认不带 DB：业务包按需 `namix = { features = ["sqlite"] }` 以减小体积。
+# 运行期还可在 namix.toml `[database] enabled = false` 跳过连接。
+default = []
+models = ["namix-http/models"]
+services = ["namix-http/services"]
+requests = ["namix-http/requests"]
+pages = ["namix-http/pages"]
+# 数据库驱动（Toasty）— 可多开
+sqlite = ["dep:toasty", "toasty/sqlite", "toasty/jiff"]
+postgresql = ["dep:toasty", "toasty/postgresql", "toasty/jiff"]
+mysql = ["dep:toasty", "toasty/mysql", "toasty/jiff"]
+turso = ["dep:toasty", "toasty/turso", "toasty/jiff"]
+dynamodb = ["dep:toasty", "toasty/dynamodb", "toasty/jiff"]
+db = ["sqlite"]
+
+[dependencies]
+futures-util = "0.3"
+clap = { version = "4", features = ["derive"] }
+local-ip-address = "0.6"
+namix-http = { workspace = true }
+namix-macros = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
+toasty = { version = "0.9", optional = true, default-features = false, features = ["serde", "jiff"] }
+tokio = { workspace = true, features = ["sync"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

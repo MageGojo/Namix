@@ -1,0 +1,90 @@
+//! 控制器视图能力 —— Laravel `return view('x')->with(...);`。
+
+use serde::Serialize;
+
+use crate::core::controller::Controller as ControllerCore;
+use crate::core::request::Request;
+use crate::core::response::Response;
+
+use super::{RenderMode, View, ViewPage};
+
+/// 控制器 = 跳转/flash（[`ControllerCore`]）+ 渲染视图。
+///
+/// ```ignore
+/// // Laravel: return view('login', compact('error'))->with('count', $n);
+/// req.view("login")
+///     .ssr()
+///     .title("登录")
+///     .with("error", err)
+///     .with("registeredCount", n)
+///     .render()
+///
+/// // 类型化：req.render(Login { ... })
+/// ```
+pub trait Controller: ControllerCore {
+    /// 开始拼视图（链式 `with` / `title` / `ssr` → `render`）。
+    fn view(&self, name: impl Into<String>) -> ViewBag<'_>;
+
+    /// 类型化页面：`req.render(Login { .. })`。
+    fn render<P: ViewPage>(&self, page: P) -> Response;
+}
+
+impl Controller for Request {
+    fn view(&self, name: impl Into<String>) -> ViewBag<'_> {
+        ViewBag {
+            req: self,
+            view: View::make(name),
+        }
+    }
+
+    fn render<P: ViewPage>(&self, page: P) -> Response {
+        page.render_page(self)
+    }
+}
+
+/// Laravel 风格视图构建器：`req.view("login").with(...).render()`。
+pub struct ViewBag<'a> {
+    req: &'a Request,
+    view: View,
+}
+
+impl<'a> ViewBag<'a> {
+    /// `->with('key', $value)`
+    pub fn with(mut self, key: impl AsRef<str>, value: impl Serialize) -> Self {
+        self.view = self.view.prop(key.as_ref(), value);
+        self
+    }
+
+    /// 一次合并多字段：`view('x', ['a' => 1, 'b' => 2])`
+    pub fn data(mut self, props: impl Serialize) -> Self {
+        self.view = self.view.data(props);
+        self
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.view = self.view.title(title);
+        self
+    }
+
+    pub fn mode(mut self, mode: RenderMode) -> Self {
+        self.view = self.view.mode(mode);
+        self
+    }
+
+    pub fn ssr(self) -> Self {
+        self.mode(RenderMode::Ssr)
+    }
+
+    pub fn spa(self) -> Self {
+        self.mode(RenderMode::Spa)
+    }
+
+    pub fn island(self) -> Self {
+        self.mode(RenderMode::Island)
+    }
+
+    /// 渲染并消费 flash cookie。
+    pub fn render(self) -> Response {
+        self.view.render(self.req).consume_flash(self.req)
+    }
+}

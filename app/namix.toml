@@ -1,0 +1,72 @@
+# Namix 单应用配置
+#
+# 只有 [apps.main] 一个进程。
+# 实体 → src/models/ · 碰库 → src/services/ · 控制器只调服务
+#
+# DATABASE_URL 可覆盖 [database] 拼出的连接串
+# 开发 push_schema=true；正式用：
+#   cargo run -p app --bin toasty -- migration generate|apply
+#   cargo run -p app --bin seed
+
+[database]
+# enabled = false 时 Boot 不连库；去体积请同时去掉 Cargo.toml 里 namix 的 db feature
+enabled = true
+# sqlite | mysql | postgresql | custom（custom 请自填 url，并在 Cargo.toml 打开对应 feature）
+driver = "sqlite"
+# 可留空：按 driver + 下方分项生成；也可直接写完整 URL
+url = "sqlite:./storage/namix.db"
+# host = "127.0.0.1"
+# port = 5432
+# name = "namix"
+# username = "postgres"
+# password = ""
+push_schema = true
+
+[features]
+validators = true
+requests = false
+# pages=true → app/src/views/*.tsx（Laravel 风格 req.view）
+pages = true
+# false=开发看明文 JSON 包络；true=生产整包 octet-stream（公钥在 WASM，无 /api/k）
+# 也可用 NAMIX_ACTION_SEAL=0|1；改开关后需 npm run build:wasm
+action_seal = true
+
+# 邮件：log/file 都会写 storage 并打日志；后续可换 smtp
+[mail]
+driver = "log"
+from = "noreply@namix.local"
+store = "./storage/mail"
+
+# 短信 / OTP：开发 log_otp=true 会在日志打印验证码
+[sms]
+driver = "log"
+from = "Namix"
+store = "./storage/sms"
+log_otp = true
+
+[apps.main]
+hosts = ["localhost", "127.0.0.1"]
+port = 3000
+https = true
+https_port = 3443
+http3 = true
+lan = false
+tls_hosts = ["localhost", "127.0.0.1"]
+
+# 浏览器写请求保护与默认限流预算。生产环境把 environment 改为 production，
+# 并通过 NAMIX_SESSION_SECRET 或 session_secret 提供高熵密钥。
+[security]
+environment = "development"
+csrf = true
+csrf_trusted_origins = []
+trusted_proxies = []
+# 生产由 Caddy/Nginx/负载均衡终止 TLS 时设为 true；此时应用仅绑定私网/loopback。
+tls_terminated_by_proxy = false
+
+[security.rate_limit]
+enabled = true
+window_seconds = 60
+login = 5
+registration = 3
+action = 60
+upload = 10

@@ -1,0 +1,23 @@
+[package]
+name = "nx"
+version.workspace = true
+edition.workspace = true
+description = "Namix CLI：new / make / migrate / seed / export / build / dev / doctor"
+
+[[bin]]
+name = "nx"
+path = "src/main.rs"
+
+[dependencies]
+bubbletea-rs = "0.0.9"
+# 当前 CLI 未使用剪贴板；关闭默认特性可移除不兼容的 macOS 旧依赖。
+bubbletea-widgets = { version = "0.1.12", default-features = false }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+ctrlc = "3"
+crossterm = "0.29"
+lipgloss-extras = { version = "0.1.1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+toml = "0.8"
