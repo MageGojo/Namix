@@ -33,5 +33,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
 toasty = { version = "0.9", optional = true, default-features = false, features = ["serde", "jiff"] }
 tokio = { workspace = true, features = ["sync"] }
+aes-gcm = "0.10"
+base64 = "0.22"
+hkdf = "0.12"
+hmac = "0.12"
+rand = "0.8"
+sha2 = "0.10"
 anyhow = { workspace = true }
 thiserror = { workspace = true }

@@ -1,16 +1,20 @@
 import type { HomePage } from '../generated/HomePage'
 import { LoginForm } from '../generated/fields'
 import { Head, Link } from '../namix'
-import { route, routes } from '../routes'
+import { routes } from '../routes'
 import type { PageProps } from '../types'
 
 type Props = PageProps<HomePage>
 
+/**
+ * 首页只渲染服务端已定稿的展示数据。
+ * 不含 userId / isVip / roles —— 导航与问候由控制器按身份拼好。
+ */
 export default function Home({
   title,
-  username,
-  isVip = false,
+  greeting,
   usersCount,
+  navLinks = [],
   url = '/',
 }: Props) {
   const routeNames = Object.keys(routes)
@@ -24,70 +28,27 @@ export default function Home({
         <header className="flex flex-wrap items-center justify-between gap-4">
           <p className="text-sm font-medium tracking-wide text-teal-700">Namix</p>
           <nav className="flex flex-wrap gap-4 text-sm text-zinc-600">
-            <Link prefetch className="hover:text-zinc-900" href={route.home()}>
-              Home
-            </Link>
-            {username ? (
-              <>
-                <Link prefetch className="hover:text-zinc-900" href={route.me()}>
-                  Me
-                </Link>
-                <Link prefetch className="hover:text-zinc-900" href={route.posts()}>
-                  Posts
-                </Link>
-                <Link prefetch className="hover:text-zinc-900" href={route.chat()}>
-                  Chat
-                </Link>
-                <Link
-                  prefetch
-                  className="hover:text-zinc-900"
-                  href={route.profile({ id: 1 })}
-                >
-                  Public
-                </Link>
-                <Link prefetch className="hover:text-zinc-900" href={route.demo()}>
-                  Demo
-                </Link>
-                {isVip ? (
-                  <Link prefetch className="hover:text-zinc-900" href={route.vip()}>
-                    VIP
-                  </Link>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <Link prefetch className="hover:text-zinc-900" href={route.login()}>
-                  Login
-                </Link>
-                <Link prefetch className="hover:text-zinc-900" href={route.register()}>
-                  Register
-                </Link>
-                <Link prefetch className="hover:text-zinc-900" href={route.demo()}>
-                  Demo
-                </Link>
-              </>
-            )}
+            {navLinks.map((item) => (
+              <Link
+                key={`${item.label}:${item.href}`}
+                prefetch
+                className="hover:text-zinc-900"
+                href={item.href}
+              >
+                {item.label}
+              </Link>
+            ))}
           </nav>
         </header>
 
         <section className="space-y-3">
           <h1 className="text-4xl font-semibold tracking-tight">{title}</h1>
-          <p className="text-lg text-zinc-600">
-            {username ? (
-              <>
-                已登录：<span className="font-medium text-zinc-900">{username}</span>
-              </>
-            ) : (
-              '未登录'
-            )}
-          </p>
+          <p className="text-lg text-zinc-600">{greeting}</p>
           <p className="text-zinc-600">库中用户：{usersCount}</p>
           <p className="text-sm text-zinc-500">
             URL <code className="rounded bg-zinc-200 px-1.5">{url}</code>
             {' · '}
             字段 <code className="rounded bg-zinc-200 px-1.5">{LoginForm.Username}</code>
-            {' · '}
-            <code className="rounded bg-zinc-200 px-1.5">route.home()</code>
           </p>
         </section>
 

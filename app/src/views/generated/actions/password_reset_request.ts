@@ -2,6 +2,6 @@
 import { callRust } from '../callRust'
 
 /** action `password_reset_request` → token `141cd5c5`（路径已混淆） */
-export function password_reset_request(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+export function password_reset_request(input?: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return callRust('141cd5c5', input)
 }

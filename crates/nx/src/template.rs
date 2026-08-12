@@ -45,6 +45,8 @@ impl DatabaseDriver {
         }
     }
 
+    /// 打开数据库时写入 Cargo `namix` features 用（lean 默认不启用）。
+    #[allow(dead_code)]
     pub fn cargo_feature(self) -> &'static str {
         match self {
             Self::Sqlite | Self::Custom => "sqlite",
@@ -108,6 +110,15 @@ namix-http = {{ path = "{fw}/crates/namix-http" }}
 namix-macros = {{ path = "{fw}/crates/namix-macros" }}
 namix-build = {{ path = "{fw}/crates/namix-build" }}
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
+
+# nx build 默认 profile：优先体积
+[profile.release-min]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
 "#
         ),
     )?;
@@ -119,19 +130,26 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 
 `nx new` 生成 · 框架 path → `{fw}`
 
-前端：`frontend/`（{fe} · tailwind={tw}）
+**默认 lean 全栈**：`controllers` + `routes` + `app/src/views`（`[features].pages = true`）。
+数据库、Model、Service、Validator、Seeder、Event 按需打开，见仓库 `docs/FEATURES.md`。
+
+视图工具链在 **`app/`**（Vite · {fe} · tailwind={tw}），不是独立 `frontend/` 工程。
 
 ```bash
-# 后端
-cargo run -p app --bin www -- -p 3000 -h --https   # 多应用
-# 或
-cargo run -p app -- -p 3000 -h --https             # 单应用
+# 视图依赖
+cd app && npm i && npm run build
 
-# 前端
-cd frontend && npm install && npm run dev
+# 后端（单应用）
+cargo run -p app -- -p 3000
+
+# 后端（多应用）
+cargo run -p app --bin www -- -p 3000
+
+# 开发：nx dev（Rust + Vite HMR）
+nx doctor
 ```
 
-启动后端后会写出 `app/storage/routes.*`；再执行 `nx export routes` 同步到 `frontend/src/routes.*`。
+启动后端后会写出 `app/storage/routes.*`；`nx export routes` 同步到 `app/src/views/routes.ts`。
 
 | 参数 | 说明 |
 |------|------|
@@ -152,7 +170,7 @@ cd frontend && npm install && npm run dev
 
     write(
         root.join(".gitignore"),
-        "/target/\n/frontend/node_modules/\n/frontend/dist/\napp/storage/*.db\n*.db\n.DS_Store\n",
+        "/target/\napp/node_modules/\napp/public/build/\napp/storage/*.db\n*.db\n.DS_Store\n",
     )?;
 
     if cfg.git {
@@ -174,40 +192,21 @@ fn git_init(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn database_toml(db: DatabaseDriver, rest: &str) -> String {
-    let driver = db.label();
-    let url = db.default_url();
-    let note = match db {
-        DatabaseDriver::Custom => {
-            "# custom：请改 url，并在 Cargo.toml 将 namix/toasty feature 换成 mysql 或 postgresql\n"
-        }
-        DatabaseDriver::Mysql => "# MySQL：确保本机已建库；Cargo feature = mysql\n",
-        DatabaseDriver::Postgresql => "# PostgreSQL：确保本机已建库；Cargo feature = postgresql\n",
-        DatabaseDriver::Sqlite => "# SQLite：文件库，默认 ./storage/namix.db\n",
-    };
-    format!(
-        r#"{note}[database]
-enabled = true
-driver = "{driver}"
-url = "{url}"
-push_schema = true
-{rest}"#
-    )
-}
-
 fn scaffold_multi(root: &Path, https: bool, db: DatabaseDriver) -> Result<(), String> {
     let app = root.join("app");
     fs::create_dir_all(app.join("src/bin")).map_err(|e| e.to_string())?;
-    let feat = db.cargo_feature();
+    let https = if https { "true" } else { "false" };
+    let driver = db.label();
+    let url = db.default_url();
 
     write(
         app.join("Cargo.toml"),
-        &format!(
-            r#"[package]
+        r#"[package]
 name = "app"
 version.workspace = true
 edition.workspace = true
 build = "build.rs"
+description = "Namix 多应用（默认：controllers + routes + views）"
 
 [[bin]]
 name = "www"
@@ -221,43 +220,48 @@ path = "src/bin/user.rs"
 name = "admin"
 path = "src/bin/admin.rs"
 
-[[bin]]
-name = "seed"
-path = "src/bin/seed.rs"
-
 [dependencies]
-namix = {{ workspace = true, features = ["{feat}"] }}
-tokio = {{ workspace = true }}
-toasty = {{ version = "0.9", default-features = false, features = ["{feat}", "serde"] }}
+namix = { workspace = true, features = ["pages"] }
+tokio = { workspace = true }
+serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
-namix-build = {{ workspace = true }}
-"#
-        ),
+namix-build = { workspace = true }
+"#,
     )?;
     write(
         app.join("build.rs"),
         "fn main() {\n    namix_build::sync();\n}\n",
     )?;
-    let https = if https { "true" } else { "false" };
     write(
         app.join("namix.toml"),
-        &database_toml(
-            db,
-            &format!(
-                r#"
+        &format!(
+            r#"# 默认脚手架：各端 controllers + routes + 共享 views（pages）。
+# 打开 models/services/validators/seeders 后请同步 Cargo features（如 {driver}）。
+
+[database]
+enabled = false
+driver = "{driver}"
+url = "{url}"
+push_schema = true
+
 [features]
-validators = true
+models = false
+services = false
+validators = false
 requests = false
-pages = false
-models = true
+pages = true
+events = false
+listeners = false
+seeders = false
+action_seal = true
 
 [apps.www]
 hosts = ["www.localhost"]
 port = 3000
 https = {https}
 https_port = 3443
-http3 = true
+http3 = false
 lan = false
 
 [apps.user]
@@ -265,7 +269,7 @@ hosts = ["user.localhost"]
 port = 3001
 https = {https}
 https_port = 3444
-http3 = true
+http3 = false
 lan = false
 
 [apps.admin]
@@ -273,19 +277,24 @@ hosts = ["admin.localhost"]
 port = 3002
 https = {https}
 https_port = 3445
-http3 = true
+http3 = false
 lan = false
+
+[security]
+environment = "development"
+csrf = true
 "#
-            ),
         ),
     )?;
     write(
-        app.join("Toasty.toml"),
-        "[migration]\npath = \"database\"\nprefix_style = \"Sequential\"\n",
-    )?;
-    write(
         app.join("src/lib.rs"),
-        "pub mod admin;\npub mod common;\npub mod route;\npub mod user;\npub mod www;\n",
+        "//! 多应用业务包。\n\
+         //! 默认：www|user|admin 的 controllers/routes/middleware；views 由 pages feature 管理。\n\
+         pub mod admin;\n\
+         pub mod common;\n\
+         pub mod route;\n\
+         pub mod user;\n\
+         pub mod www;\n",
     )?;
 
     for (path, body) in [
@@ -310,21 +319,6 @@ pub async fn logger(req: Request, next: Next) -> Response {
     let m = log::color_method(&method);
     let s = log::color_status(status);
     log::info!("{m} {path} → {s} ({ms}ms)");
-    response
-}
-"#,
-        ),
-        (
-            "src/common/middleware/timing.rs",
-            r#"use std::time::Instant;
-use namix::prelude::*;
-
-pub async fn timing(req: Request, next: Next) -> Response {
-    let method = req.method().clone();
-    let path = req.path().to_string();
-    let started = Instant::now();
-    let response = next.run(req).await;
-    println!("[timing] {method} {path} -> {} ({}ms)", response.status(), started.elapsed().as_millis());
     response
 }
 "#,
@@ -358,93 +352,15 @@ pub async fn require_login(req: Request, next: Next) -> Response {
 "#,
         ),
         (
-            "src/common/models/user.rs",
-            r#"#[derive(Debug, Clone, toasty::Model)]
-pub struct User {
-    #[key]
-    #[auto]
-    pub id: u64,
-    pub name: String,
-    #[unique]
-    pub email: String,
-}
-"#,
-        ),
-        (
-            "src/common/models/registry.rs",
-            r#"use super::user::User;
-
-pub fn model_set() -> toasty::ModelSet {
-    toasty::models!(User)
-}
-"#,
-        ),
-        (
-            "src/common/services/user.rs",
-            r#"use namix::db::{self, DbResult};
-use crate::common::models::user::User;
-
-pub struct UserService;
-impl UserService {
-    pub async fn list() -> Vec<User> {
-        db::with(|mut db| async move { toasty::query!(User).exec(&mut db).await })
-            .await
-            .unwrap_or_default()
-    }
-    pub async fn create(name: &str, email: &str) -> DbResult<User> {
-        let name = name.to_string();
-        let email = email.to_string();
-        db::with(move |mut db| {
-            let name = name.clone();
-            let email = email.clone();
-            async move {
-                toasty::create!(User {
-                    name: name.as_str(),
-                    email: email.as_str(),
-                })
-                .exec(&mut db)
-                .await
-            }
-        })
-        .await
-    }
-}
-"#,
-        ),
-        (
-            "src/common/seeders/all.rs",
-            r#"use namix::db::DbResult;
-use super::users::UsersSeeder;
-
-pub async fn run() -> DbResult<()> {
-    UsersSeeder::run().await
-}
-"#,
-        ),
-        (
-            "src/common/seeders/users.rs",
-            r#"use namix::db::DbResult;
-use crate::common::services::user::UserService;
-
-pub struct UsersSeeder;
-impl UsersSeeder {
-    pub async fn run() -> DbResult<()> {
-        if !UserService::list().await.is_empty() {
-            return Ok(());
-        }
-        UserService::create("alice", "alice@example.com").await?;
-        Ok(())
-    }
-}
-"#,
-        ),
-        (
             "src/www/controllers/home.rs",
             r#"use namix::prelude::*;
-use crate::common::services::user::UserService;
 
 pub async fn index(_req: Request) -> Response {
-    text(format!("www — {} users", UserService::list().await.len()))
+    html(
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\" /><title>www · Namix</title></head>\
+         <body style=\"font-family:system-ui;padding:2rem\"><h1>www</h1>\
+         <p>默认：controllers · routes · views。打开数据库见 docs/FEATURES.md。</p></body></html>",
+    )
 }
 "#,
         ),
@@ -452,95 +368,27 @@ pub async fn index(_req: Request) -> Response {
             "src/www/routes/web.rs",
             r#"use namix::prelude::*;
 use crate::www::controllers::home;
+use crate::route;
 
 pub fn routes() -> Router {
-    Router::new().get("/", home::index)
-}
-"#,
-        ),
-        (
-            "src/common/events/user_registered.rs",
-            r#"//! 注册页 dispatch → 各功能 listen → Outcome 汇总回注册页。
-
-#[derive(Clone, Debug)]
-pub struct UserRegistered {
-    pub username: String,
-}
-"#,
-        ),
-        (
-            "src/common/listeners/register.rs",
-            r#"use namix::prelude::*;
-use crate::common::events::user_registered::UserRegistered;
-
-/// 启动时挂监听器。
-pub fn all() {
-    listen(|e: &UserRegistered| {
-        Reply::ok(format!("account created · {}", e.username))
-    });
-    listen(|e: &UserRegistered| {
-        Reply::ok(format!("welcome mail → {}", e.username))
-    });
-}
-"#,
-        ),
-        (
-            "src/common/validators/register_form.rs",
-            r#"//! 表单验证器：字段 enum + Rule。features.validators = true 时自动保留本目录。
-
-use namix::prelude::*;
-
-#[derive(Clone, Copy, Debug, FormField)]
-pub enum RegisterForm {
-    #[field = "username"]
-    Username,
-}
-
-pub fn validate(req: &Request) -> Result<Validated, ValidationError> {
-    req.validator()
-        .rules(RegisterForm::Username, &[Rule::Required, Rule::Min(3)])
-        .validate()
+    Router::new().merge(
+        Route::get("/", home::index)
+            .name(route::www::home)
+            .register(),
+    )
 }
 "#,
         ),
         (
             "src/user/controllers/home.rs",
             r#"use namix::prelude::*;
-use crate::common::events::user_registered::UserRegistered;
-use crate::common::validators::register_form::{self, RegisterForm};
 
 pub async fn index(_req: Request) -> Response {
     text("user app")
 }
 
-pub async fn register(_req: Request) -> Response {
-    html(
-        "<h1>Register</h1>\
-         <form method=\"post\" action=\"/register\">\
-           <input name=\"username\" placeholder=\"username\" />\
-           <button type=\"submit\">Sign up</button>\
-         </form>\
-         <p>规则在 common/validators · 提交后 Event 回执</p>",
-    )
-}
-
-pub async fn register_submit(req: Request) -> Response {
-    let validated = match register_form::validate(&req) {
-        Ok(v) => v,
-        Err(_) => return Response::redirect("/register"),
-    };
-    let username = validated.get(RegisterForm::Username).to_string();
-    let outcome = dispatch(UserRegistered {
-        username: username.clone(),
-    });
-    let steps = outcome
-        .messages()
-        .into_iter()
-        .map(|m| format!("<li>{m}</li>"))
-        .collect::<String>();
-    html(format!(
-        "<h1>注册成功</h1><p>{username}</p><ul>{steps}</ul>"
-    ))
+pub async fn login(_req: Request) -> Response {
+    html("<h1>Login</h1><p>开启 session / models 后再接真实登录。</p>")
 }
 
 pub async fn profile(_req: Request) -> Response {
@@ -558,9 +406,7 @@ use crate::user::middleware::auth::require_login;
 pub fn routes() -> Router {
     Router::new()
         .merge(Route::get("/", home::index).name(route::user::home).register())
-        .merge(Route::get("/login", home::index).name(route::user::login).register())
-        .merge(Route::get("/register", home::register).name(route::user::register).register())
-        .merge(Route::post("/register", home::register_submit).name(route::user::register).register())
+        .merge(Route::get("/login", home::login).name(route::user::login).register())
         .merge(
             Route::get("/profile", home::profile)
                 .middleware(require_login)
@@ -573,15 +419,13 @@ pub fn routes() -> Router {
         (
             "src/admin/controllers/home.rs",
             r#"use namix::prelude::*;
-use crate::common::services::user::UserService;
 
 pub async fn index(_req: Request) -> Response {
     text("admin ok")
 }
 
-pub async fn users(_req: Request) -> Response {
-    let names: Vec<_> = UserService::list().await.into_iter().map(|u| u.name).collect();
-    text(format!("admin users: {}", names.join(", ")))
+pub async fn dashboard(_req: Request) -> Response {
+    text("admin dashboard")
 }
 "#,
         ),
@@ -590,21 +434,44 @@ pub async fn users(_req: Request) -> Response {
             r#"use namix::prelude::*;
 use crate::admin::controllers::home;
 use crate::admin::middleware::auth::require_admin;
+use crate::route;
 
 pub fn routes() -> Router {
     Router::new()
-        .get("/", home::index)
-        .group("/users", |r| {
-            r.get("/", home::users).middleware(require_admin)
-        })
+        .merge(Route::get("/", home::index).name(route::admin::home).register())
+        .merge(
+            Route::get("/dashboard", home::dashboard)
+                .middleware(require_admin)
+                .name(route::admin::dashboard)
+                .register(),
+        )
 }
 "#,
+        ),
+        (
+            "src/views/pages/home.tsx",
+            r#"import { Head } from '../namix'
+
+export default function Home({ title }: { title?: string }) {
+  return (
+    <main className="min-h-screen px-6 py-14">
+      <Head title={title ? `${title} · Namix` : 'Namix'} />
+      <h1 className="text-3xl font-semibold">{title ?? 'Namix'}</h1>
+      <p className="mt-3 text-zinc-600">多应用默认脚手架：controllers · routes · views</p>
+    </main>
+  )
+}
+"#,
+        ),
+        (
+            "src/views/.namix-feature",
+            "feature = \"pages\"\n# managed by namix-build — do not remove\n",
         ),
     ] {
         write(app.join(path), body)?;
     }
 
-    for bin in ["www", "admin"] {
+    for bin in ["www", "user", "admin"] {
         write(
             app.join(format!("src/bin/{bin}.rs")),
             &format!(
@@ -615,9 +482,7 @@ async fn main() {{
     namix::init_workdir(env!("CARGO_MANIFEST_DIR"));
     Boot::new("{bin}")
         .toml(include_str!("../../namix.toml"))
-        .models(app::common::models::registry::model_set())
         .middleware(app::common::middleware::logger::logger)
-        .middleware(app::common::middleware::timing::timing)
         .routes(app::{bin}::routes::web::routes())
         .run()
         .await
@@ -627,55 +492,8 @@ async fn main() {{
             ),
         )?;
     }
-    write(
-        app.join("src/bin/user.rs"),
-        r#"use namix::Boot;
-
-#[tokio::main]
-async fn main() {
-    namix::init_workdir(env!("CARGO_MANIFEST_DIR"));
-    app::common::listeners::register::all();
-
-    Boot::new("user")
-        .toml(include_str!("../../namix.toml"))
-        .models(app::common::models::registry::model_set())
-        .middleware(app::common::middleware::logger::logger)
-        .middleware(app::common::middleware::timing::timing)
-        .routes(app::user::routes::web::routes())
-        .run()
-        .await
-        .expect("user failed");
-}
-"#,
-    )?;
-    write(
-        app.join("src/bin/seed.rs"),
-        r#"use namix::{db, NamixToml};
-
-#[tokio::main]
-async fn main() {
-    let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
-    namix::log::init();
-    let cfg = NamixToml::parse(include_str!("../../namix.toml"));
-    let db = db::connect(&cfg.database.resolved_url(), app::common::models::registry::model_set())
-        .await
-        .expect("connect");
-    if cfg.database.push_schema {
-        db.push_schema().await.expect("schema");
-    }
-    db::install(db);
-    app::common::seeders::all::run().await.expect("seed");
-}
-"#,
-    )?;
 
     for dir in [
-        "src/common/models",
-        "src/common/events",
-        "src/common/listeners",
-        "src/common/validators",
-        "src/common/seeders",
-        "database/migrations",
         "storage",
         "src/www/middleware",
         "src/user/middleware",
@@ -683,95 +501,90 @@ async fn main() {
     ] {
         fs::create_dir_all(app.join(dir)).map_err(|e| e.to_string())?;
     }
-    // feature 目录标记：namix-build 关闭 feature 时只删带此标记的目录
-    write(
-        app.join("src/common/validators/.namix-feature"),
-        "feature = \"validators\"\n# managed by namix-build — do not remove\n",
-    )?;
+    write(app.join("storage/.gitkeep"), "")?;
     Ok(())
 }
 
 fn scaffold_single(root: &Path, https: bool, db: DatabaseDriver) -> Result<(), String> {
     let app = root.join("app");
-    fs::create_dir_all(app.join("src/bin")).map_err(|e| e.to_string())?;
-    let feat = db.cargo_feature();
+    fs::create_dir_all(app.join("src")).map_err(|e| e.to_string())?;
+    let https = if https { "true" } else { "false" };
+    let driver = db.label();
+    let url = db.default_url();
 
     write(
         app.join("Cargo.toml"),
-        &format!(
-            r#"[package]
+        r#"[package]
 name = "app"
 version.workspace = true
 edition.workspace = true
 build = "build.rs"
-description = "Namix 单应用：扁平 MVC + models/services"
+description = "Namix 单应用（默认：controllers + routes + views）"
 
 [[bin]]
 name = "app"
 path = "src/main.rs"
 
-[[bin]]
-name = "seed"
-path = "src/bin/seed.rs"
-
-[[bin]]
-name = "toasty"
-path = "src/bin/toasty.rs"
-
 [dependencies]
-namix = {{ workspace = true, features = ["{feat}"] }}
-tokio = {{ workspace = true }}
-toasty = {{ version = "0.9", default-features = false, features = ["{feat}", "serde"] }}
-toasty-cli = "0.9"
+namix = { workspace = true, features = ["pages"] }
+tokio = { workspace = true }
+serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
-namix-build = {{ workspace = true }}
-"#
-        ),
+namix-build = { workspace = true }
+"#,
     )?;
     write(
         app.join("build.rs"),
         "fn main() {\n    namix_build::sync_single();\n}\n",
     )?;
-    let https = if https { "true" } else { "false" };
     write(
         app.join("namix.toml"),
-        &database_toml(
-            db,
-            &format!(
-                r#"
+        &format!(
+            r#"# 默认脚手架：controllers + routes + views（pages）。
+# 打开 models/services/validators 后请同步 Cargo features（如 {driver}）与依赖。
+
+[database]
+enabled = false
+driver = "{driver}"
+url = "{url}"
+push_schema = true
+
 [features]
-validators = true
+models = false
+services = false
+validators = false
 requests = false
-pages = false
+pages = true
+events = false
+listeners = false
+seeders = false
+action_seal = true
 
 [apps.main]
-hosts = ["localhost"]
+hosts = ["localhost", "127.0.0.1"]
 port = 3000
 https = {https}
 https_port = 3443
-http3 = true
+http3 = false
 lan = false
+
+[security]
+environment = "development"
+csrf = true
 "#
-            ),
         ),
     )?;
     write(
-        app.join("Toasty.toml"),
-        "[migration]\npath = \"database\"\nprefix_style = \"Sequential\"\n",
-    )?;
-    write(
         app.join("src/lib.rs"),
-        "//! 单应用业务包（扁平目录）。\n\
-         //!\n\
-         //! - models / services / seeders — 数据层\n\
-         //! - controllers / routes / middleware — HTTP 层\n\
+        "//! 单应用业务包。\n\
+         //! 默认模块：controllers / routes / middleware；views 由 pages feature 管理。\n\
          include!(\"namix_modules.rs\");\n\
          pub mod route;\n",
     )?;
     write(
         app.join("src/route.rs"),
-        "//! 自动生成：业务写 `.name(route::main::home)` 即可\n\
+        "//! 自动生成命名路由\n\
          include!(concat!(env!(\"OUT_DIR\"), \"/namix_route_names.rs\"));\n",
     )?;
     write(
@@ -784,7 +597,6 @@ async fn main() {
 
     Boot::new("main")
         .toml(include_str!("../namix.toml"))
-        .models(app::models::registry::model_set())
         .middleware(app::middleware::logger::logger)
         .routes(app::routes::web::routes())
         .run()
@@ -793,155 +605,18 @@ async fn main() {
 }
 "#,
     )?;
-    write(
-        app.join("src/bin/seed.rs"),
-        r#"use namix::{db, NamixToml};
-
-#[tokio::main]
-async fn main() {
-    let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
-    namix::log::init();
-    let cfg = NamixToml::parse(include_str!("../../namix.toml"));
-    let db = db::connect(
-        &cfg.database.resolved_url(),
-        app::models::registry::model_set(),
-    )
-    .await
-    .expect("connect");
-    if cfg.database.push_schema {
-        let _ = db.push_schema().await;
-    }
-    db::install(db);
-    app::seeders::all::run().await.expect("seed");
-    namix::log::info!("seed complete");
-}
-"#,
-    )?;
-    write(
-        app.join("src/bin/toasty.rs"),
-        r#"use std::path::Path;
-use namix::db;
-use toasty_cli::{Config, MigrationConfig, ToastyCli};
-
-#[tokio::main]
-async fn main() {
-    let _ = std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"));
-    namix::log::init();
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite:./storage/namix.db".into());
-    let db = db::connect(&url, app::models::registry::model_set())
-        .await
-        .expect("connect");
-    let config = Config::load_from(Path::new("Toasty.toml")).unwrap_or_else(|_| {
-        Config::new().migration(MigrationConfig::new().path("database"))
-    });
-    ToastyCli::with_config(db, config)
-        .parse_and_run()
-        .await
-        .expect("toasty failed");
-}
-"#,
-    )?;
 
     for (path, body) in [
         (
-            "src/models/user.rs",
-            r#"#[derive(Debug, Clone, toasty::Model)]
-pub struct User {
-    #[key]
-    #[auto]
-    pub id: u64,
-    pub name: String,
-    #[unique]
-    pub email: String,
-}
-"#,
-        ),
-        (
-            "src/models/registry.rs",
-            r#"use super::user::User;
-
-pub fn model_set() -> toasty::ModelSet {
-    toasty::models!(User)
-}
-"#,
-        ),
-        (
-            "src/services/user.rs",
-            r#"//! 碰库只写这里。
-
-use namix::db::{self, DbResult};
-use crate::models::user::User;
-
-pub struct UserService;
-
-impl UserService {
-    pub async fn list() -> Vec<User> {
-        db::with(|mut db| async move { toasty::query!(User).exec(&mut db).await })
-            .await
-            .unwrap_or_default()
-    }
-
-    pub async fn create(name: &str, email: &str) -> DbResult<User> {
-        let name = name.to_string();
-        let email = email.to_string();
-        db::with(move |mut db| {
-            let name = name.clone();
-            let email = email.clone();
-            async move {
-                toasty::create!(User {
-                    name: name.as_str(),
-                    email: email.as_str(),
-                })
-                .exec(&mut db)
-                .await
-            }
-        })
-        .await
-    }
-}
-"#,
-        ),
-        (
-            "src/seeders/all.rs",
-            r#"use namix::db::DbResult;
-use super::users::UsersSeeder;
-
-pub async fn run() -> DbResult<()> {
-    UsersSeeder::run().await
-}
-"#,
-        ),
-        (
-            "src/seeders/users.rs",
-            r#"use namix::db::DbResult;
-use crate::services::user::UserService;
-
-pub struct UsersSeeder;
-
-impl UsersSeeder {
-    pub async fn run() -> DbResult<()> {
-        if !UserService::list().await.is_empty() {
-            return Ok(());
-        }
-        UserService::create("alice", "alice@example.com").await?;
-        namix::log::info!("seeded alice");
-        Ok(())
-    }
-}
-"#,
-        ),
-        (
             "src/controllers/home.rs",
             r#"use namix::prelude::*;
-use crate::services::user::UserService;
 
+/// 默认首页：纯 HTML，不依赖 Vite SSR 产物。
+/// 需要 `req.view` 时：保持 pages=true，在 app/ 执行 npm run build，再改用 ViewData。
 pub async fn index(_req: Request) -> Response {
-    let n = UserService::list().await.len();
-    html(format!(
-        "<h1>Namix Single</h1><p>users in sqlite: <b>{n}</b></p>\
-         <p>实体 → models/ · 碰库 → services/ · 本页 → controllers/</p>"
-    ))
+    html(
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\" />         <title>Namix</title></head><body style=\"font-family:system-ui;padding:2rem\">         <h1>Namix</h1>         <p>默认脚手架：<b>controllers</b> · <b>routes</b> · <b>views</b></p>         <p>打开数据库 / 校验 / 会话：编辑 <code>namix.toml [features]</code> 与 Cargo features，见文档 FEATURES.md。</p>         </body></html>",
+    )
 }
 "#,
         ),
@@ -980,38 +655,14 @@ pub fn routes() -> Router {
 "#,
         ),
         (
-            "src/validators/register_form.rs",
-            r#"use namix::prelude::*;
-
-#[derive(Clone, Copy, Debug, FormField)]
-pub enum RegisterForm {
-    #[field = "username"]
-    Username,
-}
-
-pub fn validate(req: &Request) -> Result<Validated, ValidationError> {
-    req.validator()
-        .rules(RegisterForm::Username, &[Rule::Required, Rule::Min(3)])
-        .validate()
-}
-"#,
+            "src/views/.namix-feature",
+            "feature = \"pages\"\n# managed by namix-build — do not remove\n",
         ),
     ] {
         write(app.join(path), body)?;
     }
 
-    for dir in [
-        "src/events",
-        "src/listeners",
-        "database/migrations",
-        "storage",
-    ] {
-        fs::create_dir_all(app.join(dir)).map_err(|e| e.to_string())?;
-    }
-    write(
-        app.join("src/validators/.namix-feature"),
-        "feature = \"validators\"\n# managed by namix-build — do not remove\n",
-    )?;
+    fs::create_dir_all(app.join("storage")).map_err(|e| e.to_string())?;
     write(app.join("storage/.gitkeep"), "")?;
     Ok(())
 }

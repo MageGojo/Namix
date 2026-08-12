@@ -21,6 +21,15 @@ http3 = false
 lan = false
 hosts = ["APP_A.example"]
 
+# Shared session store is required for overlap-safe rolling updates.
+# `file` uses dist/data/storage/sessions via the release storage symlink.
+# Wire RedisSessionStore in the app and set driver = "redis" when using Redis.
+[session]
+driver = "file"
+path = "./storage/sessions"
+lifetime_secs = 604800
+jwt_lifetime_secs = 3600
+
 [security]
 environment = "production"
 csrf = true

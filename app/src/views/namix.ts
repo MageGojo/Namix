@@ -10,6 +10,7 @@ export { Link, type LinkProps } from './components/link'
 export { Head } from './components/head'
 export { router, type VisitOptions } from './lib/router'
 export { useForm, type SubmitOpts } from './lib/useForm'
+export { csrfToken, CsrfField, type CsrfFieldProps } from './lib/csrf'
 export {
   ActionException,
   parseActionFailure,

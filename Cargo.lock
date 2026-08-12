@@ -3411,14 +3411,20 @@ dependencies = [
 name = "namix"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "base64",
  "clap",
  "futures-util",
+ "hkdf",
+ "hmac 0.12.1",
  "local-ip-address",
  "namix-http",
  "namix-macros",
+ "rand 0.8.7",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "toasty",
  "tokio",
@@ -3645,6 +3651,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml 0.8.23",
+ "x25519-dalek",
 ]
 
 [[package]]

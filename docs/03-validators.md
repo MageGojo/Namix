@@ -94,19 +94,20 @@ impl FormRequest for RegisterRequest {
 
 ```rust
 #[server(name = "register", seal = ["password", "password_confirmation"])]
-pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, ActionError> {
+pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
     let form = RegisterRequest::from_values(&req)?;
     // form.username / form.password 已合法
     …
 }
 ```
 
-校验失败 → `ValidationError` → `ActionError` → HTTP 422 风格 JSON，前端 `useForm` 挂到对应 input。
+校验失败 → `ValidationError` → `AppError` / `ActionError` → HTTP 422 风格 JSON，前端 `useForm` 挂到对应 input。
 
-业务级错误继续用字段袋：
+业务级错误继续用字段袋（或 `AppError::validation`）：
 
 ```rust
 Err(ActionError::field("username", "username already taken"))
+// 或 Err(AppError::validation("username", "username already taken"))
 ```
 
 ### B. 经典 POST：提取器注入
@@ -247,3 +248,4 @@ nx make validator Checkout
 | `Confirmed` 但前端字段名写错 | 必须是 `{name}_confirmation` |
 | 在 `from_values` 里 `return req.redirect…` | 只返回 `Err(ValidationError)` |
 | 密码规则只写在前端 | 后端 `Rule` / `custom` 必须有，前端校验只是体验 |
+| 经典 POST 缺 CSRF | 表单加 `<CsrfField />`；校验本身不负责 CSRF（Boot 中间件） |

@@ -16,12 +16,13 @@ pub fn render_routes_ts(map: &BTreeMap<String, RouteExport>) -> String {
         let methods = item
             .methods
             .iter()
-            .map(|m| format!("\"{m}\""))
+            .map(|m| ts_string(m))
             .collect::<Vec<_>>()
             .join(", ");
-        let uri = escape(item.uri.as_str());
+        let name = ts_string(name);
+        let uri = ts_string(&item.uri);
         body.push_str(&format!(
-            "  \"{name}\": {{ uri: \"{uri}\", methods: [{methods}] as const }},\n"
+            "  {name}: {{ uri: {uri}, methods: [{methods}] as const }},\n"
         ));
     }
     body.push_str("} as const;\n\n");
@@ -33,9 +34,10 @@ pub fn render_routes_ts(map: &BTreeMap<String, RouteExport>) -> String {
            if (params) {\n\
              for (const [k, v] of Object.entries(params)) {\n\
                out = out.replace(`:${k}`, String(v));\n\
+               out = out.replace(`*${k}`, String(v));\n\
              }\n\
            }\n\
-           if (out.split('/').some((s) => s.startsWith(':'))) {\n\
+           if (out.split('/').some((s) => s.startsWith(':') || s.startsWith('*'))) {\n\
              throw new Error(`missing route params: ${out}`);\n\
            }\n\
            return out;\n\
@@ -71,8 +73,8 @@ pub fn render_routes_ts(map: &BTreeMap<String, RouteExport>) -> String {
     body
 }
 
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+fn ts_string(s: &str) -> String {
+    serde_json::to_string(s).expect("route TypeScript string is serializable")
 }
 
 fn render_nested(map: &BTreeMap<String, RouteExport>) -> String {
@@ -122,28 +124,29 @@ fn render_nested(map: &BTreeMap<String, RouteExport>) -> String {
         let pad_in = "  ".repeat(indent + 1);
         if let Some((full, uri)) = &node.leaf {
             let params = path_params(uri);
-            let uri_esc = escape(uri);
+            let full_literal = ts_string(full);
+            let uri_literal = ts_string(uri);
             let child_props = emit_props(node, indent);
             // 注意：不能写 `name`——Function.name 只读，会在运行时抛错
             if params.is_empty() {
                 format!(
-                    "Object.assign(() => fill(routes[\"{full}\"].uri), {{\n\
-                     {pad_in}routeName: \"{full}\" as const,\n\
-                     {pad_in}uri: \"{uri_esc}\" as const,\n\
+                    "Object.assign(() => fill(routes[{full_literal}].uri), {{\n\
+                     {pad_in}routeName: {full_literal} as const,\n\
+                     {pad_in}uri: {uri_literal} as const,\n\
                      {child_props}{pad}}})"
                 )
             } else {
                 let typ = params
                     .iter()
-                    .map(|p| format!("{p}: string | number"))
+                    .map(|p| format!("{}: string | number", ts_type_key(p)))
                     .collect::<Vec<_>>()
                     .join("; ");
                 format!(
                     "Object.assign(\n\
-                     {pad_in}(params: {{ {typ} }}) => fill(routes[\"{full}\"].uri, params),\n\
+                     {pad_in}(params: {{ {typ} }}) => fill(routes[{full_literal}].uri, params),\n\
                      {pad_in}{{\n\
-                     {pad_in}  routeName: \"{full}\" as const,\n\
-                     {pad_in}  uri: \"{uri_esc}\" as const,\n\
+                     {pad_in}  routeName: {full_literal} as const,\n\
+                     {pad_in}  uri: {uri_literal} as const,\n\
                      {child_props}{pad_in}}}\n\
                      {pad})"
                 )
@@ -157,21 +160,81 @@ fn render_nested(map: &BTreeMap<String, RouteExport>) -> String {
 }
 
 fn path_params(uri: &str) -> Vec<String> {
-    uri.split('/')
-        .filter_map(|s| s.strip_prefix(':').map(|p| p.replace('*', "")))
-        .filter(|p| !p.is_empty())
-        .collect()
+    let mut params = Vec::new();
+    for segment in uri.split('/') {
+        let Some(param) = segment
+            .strip_prefix(':')
+            .or_else(|| segment.strip_prefix('*'))
+        else {
+            continue;
+        };
+        if !param.is_empty() && !params.iter().any(|existing| existing == param) {
+            params.push(param.to_string());
+        }
+    }
+    params
 }
 
 fn ts_ident(s: &str) -> String {
-    if s.is_empty() || s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-        return format!("[\"{s}\"]");
-    }
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
-    {
+    if is_ts_identifier(s) {
         s.to_string()
     } else {
-        format!("[\"{s}\"]")
+        format!("[{}]", ts_string(s))
+    }
+}
+
+fn ts_type_key(s: &str) -> String {
+    if is_ts_identifier(s) {
+        s.to_string()
+    } else {
+        ts_string(s)
+    }
+}
+
+fn is_ts_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || matches!(first, '_' | '$'))
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(uri: &str) -> RouteExport {
+        RouteExport {
+            uri: uri.into(),
+            methods: vec!["GET".into()],
+        }
+    }
+
+    #[test]
+    fn wildcard_is_a_required_typed_parameter() {
+        let map = BTreeMap::from([("assets.show".into(), route("/teams/:team/assets/*path"))]);
+
+        let ts = render_routes_ts(&map);
+        assert!(ts.contains("params: { team: string | number; path: string | number }"));
+        assert!(ts.contains("out = out.replace(`*${k}`, String(v));"));
+        assert!(ts.contains("s.startsWith(':') || s.startsWith('*')"));
+    }
+
+    #[test]
+    fn unsafe_parameter_names_are_quoted_type_keys() {
+        let map = BTreeMap::from([("users.show".into(), route("/users/:user-id"))]);
+
+        let ts = render_routes_ts(&map);
+        assert!(ts.contains("params: { \"user-id\": string | number }"));
+    }
+
+    #[test]
+    fn route_strings_are_emitted_as_valid_json_literals() {
+        let map = BTreeMap::from([("odd.\"name".into(), route("/line\n/:id"))]);
+
+        let ts = render_routes_ts(&map);
+        assert!(ts.contains("\"odd.\\\"name\""));
+        assert!(ts.contains("\"/line\\n/:id\""));
     }
 }

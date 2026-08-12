@@ -15,12 +15,14 @@ pub use core::content_type::ContentType;
 #[cfg(not(feature = "pages"))]
 pub use core::controller::Controller;
 pub use core::controller::{self, FLASH_COOKIE, Flash};
+pub use core::crypt;
 pub use core::csrf::{CsrfConfig, CsrfProtection, CsrfToken};
 pub use core::error::AppError;
 pub use core::extract::{FromRequest, Json, Path};
 pub use core::middleware::{MiddlewareFn, Next, wrap_middleware};
+pub use core::proxy::{TrustedProxies, TrustedProxyError};
 pub use core::rate_limit::{RateLimitPolicy, RateLimitScope, RateLimiter, set_user_subject};
-pub use core::request::{ClientIp, Request, is_local_path};
+pub use core::request::{ClientIp, JsonBodyError, Request, is_local_path};
 pub use core::response::{CookieOptions, IntoResponse, Respond, Response};
 pub use core::routing::{
     IntoRouteName, NamedRoute, ResourceController, ResourceFuture, Route, RouteCatalog,
@@ -31,7 +33,9 @@ pub use core::server_fn::{
     self, ActionError, ActionOk, ActionRateLimits, IntoActionResponse, ServerFn,
 };
 pub use core::sse::{self, Sse, SseClosed, SseEvent, SseSender};
-pub use core::test_client::{TestClient, TestResponse, TestWebSocket};
+pub use core::test_client::{
+    TestClient, TestClientError, TestClientResult, TestResponse, TestWebSocket,
+};
 pub use core::transfer::{
     self, ByteRange, ContentRange, ContentRangeHeader, RangeParseError, UploadProgress,
 };

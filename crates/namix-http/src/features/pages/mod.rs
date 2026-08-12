@@ -4,7 +4,7 @@
 //! - 路由：不进页面载荷；TSX 用 Boot 生成的 `routes.ts`（`route.main.home()`）
 //! - 模式：
 //!   - `spa`（默认）：空 `#app` + props key → 客户端 `createRoot`
-//!   - `ssr`：服务端出 HTML + CSS，无 JSON、不加载客户端 JS
+//!   - `ssr`：有 Rust 正文渲染器时输出纯 HTML；正文缺失时自动降级为内联客户端挂载
 //!   - `island`：服务端 HTML + 内联 props，客户端可交互（当前整页 hydrate；后续拆岛）
 
 mod assets;
@@ -34,7 +34,7 @@ pub enum RenderMode {
     /// 空 `#app` + props key（默认）
     #[default]
     Spa,
-    /// 纯 SSR：HTML + CSS，无 props JSON、不加载客户端 JS
+    /// SSR 优先；正文渲染器缺失时使用内联 props 客户端挂载，绝不返回空页面
     Ssr,
     /// Island：SSR HTML + 客户端可交互（当前整页 hydrate；后续按岛拆分）
     Island,
@@ -44,7 +44,7 @@ impl RenderMode {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "spa" | "client" | "csr" => Some(Self::Spa),
-            // static/html 兼容旧写法 → 纯 SSR
+            // static/html 兼容旧写法 → SSR 优先
             "ssr" | "server" | "static" | "ssg" | "html" => Some(Self::Ssr),
             "island" | "hydrate" => Some(Self::Island),
             _ => None,
@@ -105,6 +105,7 @@ pub struct View {
     props: Value,
     title: Option<String>,
     mode: RenderMode,
+    server_html: Option<String>,
 }
 
 impl View {
@@ -114,6 +115,7 @@ impl View {
             props: Value::Object(Map::new()),
             title: None,
             mode: RenderMode::Spa,
+            server_html: None,
         }
     }
 
@@ -161,6 +163,14 @@ impl View {
         self
     }
 
+    /// Supply trusted HTML rendered by a native Rust template and select pure
+    /// SSR mode. User-controlled values must be escaped by the template.
+    pub fn server_html(mut self, body: impl Into<String>) -> Self {
+        self.server_html = Some(body.into());
+        self.mode = RenderMode::Ssr;
+        self
+    }
+
     pub fn render(self, req: &Request) -> Response {
         let url = req.uri().path().to_string();
         let payload = json!({
@@ -171,7 +181,7 @@ impl View {
 
         if wants_props_json(req) {
             // 必须用 json_raw：json(String) 会再包一层引号，软导航会拿不到 component
-            return json_raw(payload.to_string());
+            return page_response(json_raw(payload.to_string()));
         }
 
         let title = self
@@ -179,43 +189,72 @@ impl View {
             .clone()
             .unwrap_or_else(|| format!("Namix · {}", self.component));
 
-        match self.mode {
-            RenderMode::Ssr => match ssr::render_html(&self.component, &self.props, &url) {
-                Ok(body_html) => html(document_shell_ssr(&title, &self.component, &body_html)),
-                Err(err) => {
-                    eprintln!("[namix pages] SSR failed ({err}); falling back to SPA");
-                    let key = props_store::put(self.component.clone(), self.props, url);
-                    html(document_shell_spa(&title, &self.component, &key))
+        page_response(match self.mode {
+            // SSR / Island 壳与 props 一律由 Rust 产出（见 ssr.rs），运行时不依赖 Node。
+            RenderMode::Ssr => match self
+                .server_html
+                .map(Ok)
+                .unwrap_or_else(|| ssr::render_html(&self.component, &self.props, &url))
+            {
+                Ok(body_html) if !body_html.trim().is_empty() => {
+                    html(document_shell_ssr(&title, &self.component, &body_html))
+                }
+                Ok(_) => html(document_shell_island(
+                    &title,
+                    &self.component,
+                    "",
+                    &payload.to_string(),
+                )),
+                Err(error) => {
+                    tracing::warn!(
+                        component = %self.component,
+                        error = %error,
+                        "SSR renderer failed; using inline client rendering"
+                    );
+                    html(document_shell_island(
+                        &title,
+                        &self.component,
+                        "",
+                        &payload.to_string(),
+                    ))
                 }
             },
-            RenderMode::Island => match ssr::render_html(&self.component, &self.props, &url) {
-                Ok(body_html) => html(document_shell_island(
+            RenderMode::Island => {
+                let body_html =
+                    ssr::render_html(&self.component, &self.props, &url).unwrap_or_default();
+                // 内联 props，客户端 createRoot/hydrate；不再回退 SPA+/__namix/props
+                html(document_shell_island(
                     &title,
                     &self.component,
                     &body_html,
                     &payload.to_string(),
-                )),
-                Err(err) => {
-                    eprintln!("[namix pages] island SSR failed ({err}); falling back to SPA");
-                    let key = props_store::put(self.component.clone(), self.props, url);
-                    html(document_shell_spa(&title, &self.component, &key))
-                }
-            },
+                ))
+            }
             RenderMode::Spa => {
                 let key = props_store::put(self.component.clone(), self.props, url);
                 html(document_shell_spa(&title, &self.component, &key))
             }
-        }
+        })
     }
 }
 
 impl IntoResponse for View {
     fn into_response(self) -> Response {
+        if let Some(body_html) = self.server_html {
+            let title = self
+                .title
+                .unwrap_or_else(|| format!("Namix · {}", self.component));
+            return page_response(html(document_shell_ssr(
+                &title,
+                &self.component,
+                &body_html,
+            )));
+        }
         let key = props_store::put(self.component.clone(), self.props, "/".into());
         let title = self
             .title
             .unwrap_or_else(|| format!("Namix · {}", self.component));
-        html(document_shell_spa(&title, &self.component, &key))
+        page_response(html(document_shell_spa(&title, &self.component, &key)))
     }
 }
 
@@ -269,6 +308,12 @@ fn wants_props_json(req: &Request) -> bool {
         .is_some_and(|a| a.contains("application/vnd.namix.props+json"))
 }
 
+fn page_response(response: Response) -> Response {
+    response
+        .with_header("cache-control", "private, no-store")
+        .with_header("vary", "accept, x-namix-props")
+}
+
 fn document_shell_spa(title: &str, component: &str, key: &str) -> String {
     let title = html_escape(title);
     let component = html_escape_attr(component);
@@ -291,7 +336,7 @@ fn document_shell_spa(title: &str, component: &str, key: &str) -> String {
     )
 }
 
-/// 纯 SSR：HTML + CSS，无 JSON、无客户端 JS。
+/// 纯 SSR：HTML + CSS，无 JSON、无客户端 JS。仅在正文非空时使用。
 fn document_shell_ssr(title: &str, component: &str, body_html: &str) -> String {
     let title = html_escape(title);
     let component = html_escape_attr(component);
@@ -356,14 +401,14 @@ fn html_escape_attr(s: &str) -> String {
 async fn serve_props(req: Request) -> Response {
     let key = req.param("key").unwrap_or("").to_string();
     match props_store::take(&key) {
-        Some(entry) => json_raw(
+        Some(entry) => page_response(json_raw(
             json!({
                 "component": entry.component,
                 "props": entry.props,
                 "url": entry.url,
             })
             .to_string(),
-        ),
+        )),
         None => with_status(StatusCode::NOT_FOUND, "props expired or unknown key"),
     }
 }
@@ -374,4 +419,72 @@ pub fn routes() -> Router {
             .name("__namix.props")
             .register(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::test_client::TestClient;
+
+    async fn ssr_without_renderer(req: Request) -> Response {
+        View::make("home")
+            .mode(RenderMode::Ssr)
+            .data(json!({"title": "Hello"}))
+            .render(&req)
+    }
+
+    async fn island_with_hostile_json(req: Request) -> Response {
+        View::make("home")
+            .mode(RenderMode::Island)
+            .data(json!({"text": "</script><script>alert(1)</script>"}))
+            .render(&req)
+    }
+
+    async fn native_ssr(req: Request) -> Response {
+        View::make("status")
+            .title("Status")
+            .server_html("<main><h1>Ready</h1></main>")
+            .render(&req)
+    }
+
+    #[tokio::test]
+    async fn ssr_without_native_body_falls_back_to_inline_client_rendering() {
+        let router = Route::get("/", ssr_without_renderer).register();
+        let mut client = TestClient::new(router);
+        let response = client.get("/").await;
+        let body = response.text();
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.headers.get("cache-control").unwrap(),
+            "private, no-store"
+        );
+        assert!(body.contains("data-namix-mode=\"island\""));
+        assert!(body.contains("id=\"__namix_page\""));
+        assert!(body.contains("\"component\":\"home\""));
+        assert!(!body.contains("data-namix-mode=\"ssr\"></div>"));
+    }
+
+    #[tokio::test]
+    async fn inline_page_payload_cannot_close_its_script_element() {
+        let router = Route::get("/", island_with_hostile_json).register();
+        let mut client = TestClient::new(router);
+        let response = client.get("/").await;
+        let body = response.text();
+
+        assert!(!body.contains("</script><script>alert(1)</script>"));
+        assert!(body.contains("\\u003c/script>\\u003cscript>alert(1)\\u003c/script>"));
+    }
+
+    #[tokio::test]
+    async fn native_server_html_stays_pure_ssr() {
+        let router = Route::get("/", native_ssr).register();
+        let mut client = TestClient::new(router);
+        let response = client.get("/").await;
+        let body = response.text();
+
+        assert!(body.contains("data-namix-mode=\"ssr\""));
+        assert!(body.contains("<main><h1>Ready</h1></main>"));
+        assert!(!body.contains("__namix_page"));
+    }
 }

@@ -1,4 +1,4 @@
-import { Link } from '../namix'
+import { CsrfField, Link } from '../namix'
 import { route } from '../routes'
 
 type Props = {
@@ -33,9 +33,12 @@ export function AppNav({ username }: Props) {
           <Link prefetch className="hover:text-zinc-900" href={route.demo()}>
             Demo
           </Link>
-          <Link className="hover:text-zinc-900" href={route.logout()}>
-            Logout ({username})
-          </Link>
+          <form method="post" action={route.logout()}>
+            <CsrfField />
+            <button type="submit" className="hover:text-zinc-900">
+              Logout ({username})
+            </button>
+          </form>
         </>
       ) : (
         <>

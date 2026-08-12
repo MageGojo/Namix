@@ -11,12 +11,16 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::core::error::AppError;
 use crate::core::request::Request;
-use crate::core::response::Response;
+use crate::core::response::{Respond, Response};
 
 use super::{Route, Router};
 
-pub type ResourceFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
+/// Boxed resource action future. The lifetime permits an action to borrow its
+/// controller while it awaits, and the result integrates with Namix's unified
+/// application-error response boundary.
+pub type ResourceFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, AppError>> + Send + 'a>>;
 
 /// Controller contract for the seven conventional CRUD endpoints.
 ///
@@ -24,26 +28,26 @@ pub type ResourceFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
 /// concise `405 Method Not Allowed` so APIs may deliberately omit e.g. HTML
 /// `create`/`edit` pages.
 pub trait ResourceController: Clone + Send + Sync + 'static {
-    fn index(&self, _req: Request) -> ResourceFuture {
-        Box::pin(async { method_not_allowed() })
+    fn index(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(method_not_allowed()) })
     }
-    fn create(&self, _req: Request) -> ResourceFuture {
-        Box::pin(async { method_not_allowed() })
+    fn create(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(method_not_allowed()) })
     }
-    fn store(&self, _req: Request) -> ResourceFuture {
-        Box::pin(async { method_not_allowed() })
+    fn store(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(method_not_allowed()) })
     }
-    fn show(&self, _req: Request) -> ResourceFuture {
-        Box::pin(async { method_not_allowed() })
+    fn show(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(method_not_allowed()) })
     }
-    fn edit(&self, _req: Request) -> ResourceFuture {
-        Box::pin(async { method_not_allowed() })
+    fn edit(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(method_not_allowed()) })
     }
-    fn update(&self, _req: Request) -> ResourceFuture {
-        Box::pin(async { method_not_allowed() })
+    fn update(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(method_not_allowed()) })
     }
-    fn destroy(&self, _req: Request) -> ResourceFuture {
-        Box::pin(async { method_not_allowed() })
+    fn destroy(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(method_not_allowed()) })
     }
 }
 
@@ -69,40 +73,73 @@ where
 
     Router::new()
         .merge(
-            Route::get(&base, move |req: Request| index.index(req))
-                .name(format!("{resource}.index"))
-                .register(),
+            Route::get(&base, move |req: Request| {
+                let controller = index.clone();
+                async move { respond_resource(controller, req, ResourceController::index).await }
+            })
+            .name(format!("{resource}.index"))
+            .register(),
         )
         .merge(
-            Route::get(&create, move |req: Request| create_controller.create(req))
-                .name(format!("{resource}.create"))
-                .register(),
+            Route::get(&create, move |req: Request| {
+                let controller = create_controller.clone();
+                async move { respond_resource(controller, req, ResourceController::create).await }
+            })
+            .name(format!("{resource}.create"))
+            .register(),
         )
         .merge(
-            Route::post(&base, move |req: Request| store.store(req))
-                .name(format!("{resource}.store"))
-                .register(),
+            Route::post(&base, move |req: Request| {
+                let controller = store.clone();
+                async move { respond_resource(controller, req, ResourceController::store).await }
+            })
+            .name(format!("{resource}.store"))
+            .register(),
         )
         .merge(
-            Route::get(&member, move |req: Request| show.show(req))
-                .name(format!("{resource}.show"))
-                .register(),
+            Route::get(&member, move |req: Request| {
+                let controller = show.clone();
+                async move { respond_resource(controller, req, ResourceController::show).await }
+            })
+            .name(format!("{resource}.show"))
+            .register(),
         )
         .merge(
-            Route::get(&edit, move |req: Request| edit_controller.edit(req))
-                .name(format!("{resource}.edit"))
-                .register(),
+            Route::get(&edit, move |req: Request| {
+                let controller = edit_controller.clone();
+                async move { respond_resource(controller, req, ResourceController::edit).await }
+            })
+            .name(format!("{resource}.edit"))
+            .register(),
         )
         .merge(
-            Route::patch(&member, move |req: Request| update.update(req))
-                .name(format!("{resource}.update"))
-                .register(),
+            Route::patch(&member, move |req: Request| {
+                let controller = update.clone();
+                async move { respond_resource(controller, req, ResourceController::update).await }
+            })
+            .name(format!("{resource}.update"))
+            .register(),
         )
         .merge(
-            Route::delete(&member, move |req: Request| destroy.destroy(req))
-                .name(format!("{resource}.destroy"))
-                .register(),
+            Route::delete(&member, move |req: Request| {
+                let controller = destroy.clone();
+                async move { respond_resource(controller, req, ResourceController::destroy).await }
+            })
+            .name(format!("{resource}.destroy"))
+            .register(),
         )
+}
+
+async fn respond_resource<C>(
+    controller: C,
+    req: Request,
+    action: for<'a> fn(&'a C, Request) -> ResourceFuture<'a>,
+) -> Response
+where
+    C: ResourceController,
+{
+    let response_request = req.clone();
+    action(&controller, req).await.respond(&response_request)
 }
 
 /// Alias for call sites that prefer `resources("posts", controller)`.
@@ -133,8 +170,8 @@ mod tests {
     struct Posts;
 
     impl ResourceController for Posts {
-        fn index(&self, _req: Request) -> ResourceFuture {
-            Box::pin(async { crate::core::controller::text("index") })
+        fn index(&self, _req: Request) -> ResourceFuture<'_> {
+            Box::pin(async { Ok(crate::core::controller::text("index")) })
         }
     }
 
@@ -152,5 +189,50 @@ mod tests {
         ] {
             assert!(catalog.path(name).is_some(), "missing {name}");
         }
+    }
+
+    #[derive(Clone)]
+    struct StatefulPosts {
+        title: String,
+    }
+
+    impl StatefulPosts {
+        async fn load_title(&self) -> Result<&str, AppError> {
+            if self.title.is_empty() {
+                Err(AppError::NotFound)
+            } else {
+                Ok(&self.title)
+            }
+        }
+    }
+
+    impl ResourceController for StatefulPosts {
+        fn index(&self, _req: Request) -> ResourceFuture<'_> {
+            Box::pin(async move {
+                let title = self.load_title().await?;
+                Ok(crate::core::controller::text(title))
+            })
+        }
+
+        fn show(&self, _req: Request) -> ResourceFuture<'_> {
+            Box::pin(async { Err(AppError::NotFound) })
+        }
+    }
+
+    #[tokio::test]
+    async fn resource_actions_may_borrow_self_and_use_question_mark() {
+        let router = resource(
+            "posts",
+            StatefulPosts {
+                title: "borrowed title".into(),
+            },
+        );
+        let mut client = crate::core::test_client::TestClient::new(router);
+
+        assert_eq!(client.get("/posts").await.text(), "borrowed title");
+        assert_eq!(
+            client.get("/posts/1").await.status,
+            http::StatusCode::NOT_FOUND
+        );
     }
 }

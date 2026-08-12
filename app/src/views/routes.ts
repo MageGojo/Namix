@@ -13,12 +13,14 @@ export const routes = {
   "home": { uri: "/", methods: ["GET"] as const },
   "island": { uri: "/island", methods: ["GET"] as const },
   "login": { uri: "/login", methods: ["GET"] as const },
-  "logout": { uri: "/logout", methods: ["GET"] as const },
+  "logout": { uri: "/logout", methods: ["POST"] as const },
   "mailbox": { uri: "/mailbox", methods: ["GET"] as const },
   "me": { uri: "/me", methods: ["GET"] as const },
   "me.submit": { uri: "/me", methods: ["POST"] as const },
   "posts": { uri: "/posts", methods: ["GET"] as const },
   "posts.submit": { uri: "/posts", methods: ["POST"] as const },
+  "posts.update": { uri: "/posts/:id", methods: ["POST"] as const },
+  "posts.destroy": { uri: "/posts/:id/delete", methods: ["POST"] as const },
   "profile": { uri: "/profile/:id", methods: ["GET"] as const },
   "register": { uri: "/register", methods: ["GET"] as const },
   "sse.ticks": { uri: "/sse/ticks", methods: ["GET"] as const },
@@ -96,6 +98,20 @@ export const route = {
       routeName: "posts.submit" as const,
       uri: "/posts" as const,
     }),
+    update: Object.assign(
+      (params: { id: string | number }) => fill(routes["posts.update"].uri, params),
+      {
+        routeName: "posts.update" as const,
+        uri: "/posts/:id" as const,
+      }
+    ),
+    destroy: Object.assign(
+      (params: { id: string | number }) => fill(routes["posts.destroy"].uri, params),
+      {
+        routeName: "posts.destroy" as const,
+        uri: "/posts/:id/delete" as const,
+      }
+    ),
   }),
   profile: Object.assign(
     (params: { id: string | number }) => fill(routes["profile"].uri, params),

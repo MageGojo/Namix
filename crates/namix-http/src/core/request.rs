@@ -6,6 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use serde::de::DeserializeOwned;
+use thiserror::Error;
 
 use super::routing::{IntoRouteName, NamedRoute, RouteCatalog};
 use super::validate::{Field, Rule, Validated, ValidationError, Validator};
@@ -16,6 +17,22 @@ use super::validate::{Field, Rule, Validated, ValidationError, Validator};
 /// a reverse proxy may replace it after validating its proxy boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClientIp(pub IpAddr);
+
+/// Typed JSON body decoding failure. It converts to a client-facing
+/// [`super::error::AppError::BadRequest`] when a controller uses `?`.
+#[derive(Debug, Error)]
+#[error("invalid JSON request body")]
+pub struct JsonBodyError {
+    #[source]
+    source: serde_json::Error,
+}
+
+impl From<JsonBodyError> for super::error::AppError {
+    fn from(error: JsonBodyError) -> Self {
+        tracing::debug!(error = ?error.source, "JSON request body decode failed");
+        Self::bad_request("invalid JSON request body")
+    }
+}
 
 /// 一次入站请求（框架层）。
 ///
@@ -168,7 +185,11 @@ impl Request {
                 Some((k, v)) => (k, v),
                 None => (pair, ""),
             };
-            if k == name {
+            // Query producers such as `URLSearchParams` percent-encode keys
+            // (`filter[status]` becomes `filter%5Bstatus%5D`). Decode both
+            // sides consistently instead of making framework filters depend
+            // on a non-standard raw-bracket URL.
+            if query_decode(k) == name {
                 return Some(query_decode(v));
             }
         }
@@ -208,8 +229,8 @@ impl Request {
         self.body_str().to_string()
     }
 
-    pub fn json<T: DeserializeOwned>(&self) -> Result<T, String> {
-        serde_json::from_slice(&self.body).map_err(|e| e.to_string())
+    pub fn json<T: DeserializeOwned>(&self) -> Result<T, JsonBodyError> {
+        serde_json::from_slice(&self.body).map_err(|source| JsonBodyError { source })
     }
 
     pub fn set_body(&mut self, body: impl Into<Bytes>) -> &mut Self {
@@ -303,7 +324,10 @@ impl Request {
             return Some(r);
         }
         if let Some(referer) = self.header("referer") {
-            return Some(path_from_referer(referer));
+            let path = path_from_referer(referer);
+            if is_local_path(&path) {
+                return Some(path);
+            }
         }
         None
     }
@@ -559,5 +583,31 @@ mod tests {
 
         let external = request("/login?redirect=https%3A%2F%2Fexample.test");
         assert_eq!(external.previous_url(), None);
+    }
+
+    #[test]
+    fn query_decodes_percent_encoded_keys() {
+        let request = request("/posts?filter%5Bstatus%5D=published");
+        assert_eq!(request.query("filter[status]").as_deref(), Some("published"));
+    }
+
+    #[test]
+    fn previous_url_rejects_scheme_relative_referer() {
+        let mut request = request("/login");
+        request.set_header("referer", "//attacker.test/path");
+        assert_eq!(request.previous_url(), None);
+    }
+
+    #[test]
+    fn json_decode_errors_convert_to_bad_request() {
+        let request = Request::new(
+            Method::POST,
+            Uri::from_static("/api/items"),
+            HeaderMap::new(),
+            Bytes::from_static(b"{not-json}"),
+        );
+        let error = request.json::<serde_json::Value>().unwrap_err();
+        let app_error: super::super::error::AppError = error.into();
+        assert_eq!(app_error.status(), StatusCode::BAD_REQUEST);
     }
 }

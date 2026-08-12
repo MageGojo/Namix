@@ -77,7 +77,7 @@ pub fn run(project: &Project, with_compile: bool) -> Result<(), String> {
         } else {
             checks.push(warn(
                 "[features].validators",
-                "未开启 — nx make validator 仍可写文件，但目录可能被 sync 删掉",
+                "未开启 — nx make validator 可写文件，开启后才会纳入模块树",
             ));
         }
     }
@@ -97,8 +97,27 @@ pub fn run(project: &Project, with_compile: bool) -> Result<(), String> {
                 "src/controllers",
             );
             expect_dir(&mut checks, &project.src_dir().join("routes"), "src/routes");
-            expect_dir(&mut checks, &project.models_dir(), "src/models");
-            expect_dir(&mut checks, &project.services_dir(), "src/services");
+            if feature_enabled(&toml, "models") {
+                expect_dir(&mut checks, &project.models_dir(), "src/models");
+            } else {
+                checks.push(ok("src/models", "未开启 [features].models（lean 默认）"));
+            }
+            if feature_enabled(&toml, "services") {
+                expect_dir(&mut checks, &project.services_dir(), "src/services");
+            } else {
+                checks.push(ok(
+                    "src/services",
+                    "未开启 [features].services（lean 默认）",
+                ));
+            }
+            if feature_enabled(&toml, "pages") {
+                expect_dir(&mut checks, &project.src_dir().join("views"), "src/views");
+            } else {
+                checks.push(warn(
+                    "src/views",
+                    "未开启 [features].pages — 无 React 视图目录",
+                ));
+            }
             if project.src_dir().join("main.rs").is_file() {
                 checks.push(ok("src/main.rs", "存在"));
             } else {
@@ -133,45 +152,81 @@ pub fn run(project: &Project, with_compile: bool) -> Result<(), String> {
         }
     }
 
-    // registry / toasty / bins
-    if project.registry_rs().is_file() {
-        let reg = fs::read_to_string(project.registry_rs()).unwrap_or_default();
-        if reg.contains("toasty::models!") {
-            checks.push(ok("models/registry.rs", "含 model_set()"));
+    let db_enabled = toml
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("[database]"))
+        .skip(1)
+        .take_while(|l| {
+            let t = l.trim_start();
+            !(t.starts_with('[') && t.ends_with(']'))
+        })
+        .any(|l| {
+            let t = l.split('#').next().unwrap_or("").trim();
+            t == "enabled = true" || t == "enabled=true"
+        });
+
+    // registry / toasty / bins — lean 默认不强制
+    if feature_enabled(&toml, "models") || db_enabled {
+        if project.registry_rs().is_file() {
+            let reg = fs::read_to_string(project.registry_rs()).unwrap_or_default();
+            if reg.contains("toasty::models!") {
+                checks.push(ok("models/registry.rs", "含 model_set()"));
+            } else {
+                checks.push(fail("models/registry.rs", "缺少 toasty::models!"));
+            }
         } else {
-            checks.push(fail("models/registry.rs", "缺少 toasty::models!"));
+            checks.push(fail(
+                "models/registry.rs",
+                "缺失 — 已开 models/database，需要 model_set()",
+            ));
         }
     } else {
-        checks.push(fail(
+        checks.push(ok(
             "models/registry.rs",
-            "缺失 — Boot/seed/toasty 需要 model_set()",
+            "未开启 models / database（lean 默认）",
         ));
     }
 
-    if project.toasty_toml().is_file() {
-        checks.push(ok("Toasty.toml", "存在"));
+    if db_enabled {
+        if project.toasty_toml().is_file() {
+            checks.push(ok("Toasty.toml", "存在"));
+        } else {
+            checks.push(warn("Toasty.toml", "缺失 — 建议补上后再 nx migrate"));
+        }
     } else {
-        checks.push(warn("Toasty.toml", "缺失 — nx migrate 仍可跑，建议补上"));
+        checks.push(ok("Toasty.toml", "database.enabled=false（lean 默认）"));
     }
 
     let cargo = fs::read_to_string(project.app_dir.join("Cargo.toml")).unwrap_or_default();
-    if namix_feature_enabled(&cargo, "sqlite") {
-        checks.push(ok("Cargo namix/sqlite", "已启用"));
-    } else if cargo.contains("namix") {
-        checks.push(warn(
-            "Cargo namix/sqlite",
-            "未看到 features = [\"sqlite\"]，连库可能失败",
-        ));
+    if db_enabled {
+        let has_db_feat = ["sqlite", "mysql", "postgresql", "turso", "dynamodb"]
+            .iter()
+            .any(|f| namix_feature_enabled(&cargo, f));
+        if has_db_feat {
+            checks.push(ok("Cargo namix/db", "已启用驱动 feature"));
+        } else if cargo.contains("namix") {
+            checks.push(fail(
+                "Cargo namix/db",
+                "database.enabled=true 但 Cargo 未开 sqlite/mysql/postgresql…",
+            ));
+        }
+    } else {
+        checks.push(ok("Cargo namix/db", "未连库（lean 默认）"));
     }
 
     for bin in ["toasty", "seed"] {
         let path = project.app_dir.join(format!("src/bin/{bin}.rs"));
         if path.is_file() {
             checks.push(ok(&format!("bin/{bin}"), "存在"));
-        } else {
+        } else if db_enabled || (*bin == *"seed" && feature_enabled(&toml, "seeders")) {
             checks.push(fail(
                 &format!("bin/{bin}"),
                 "缺失 — 无法 nx migrate / nx seed",
+            ));
+        } else {
+            checks.push(ok(
+                &format!("bin/{bin}"),
+                "未生成（lean；开 database/seeders 后再补）",
             ));
         }
     }
@@ -196,8 +251,16 @@ pub fn run(project: &Project, with_compile: bool) -> Result<(), String> {
     }
 
     expect_dir(&mut checks, &project.app_dir.join("storage"), "storage/");
-    expect_dir(&mut checks, &project.app_dir.join("database"), "database/");
-    expect_dir(&mut checks, &project.seeders_dir(), "seeders/");
+    if db_enabled {
+        expect_dir(&mut checks, &project.app_dir.join("database"), "database/");
+    } else {
+        checks.push(ok("database/", "未启用 database（lean 默认）"));
+    }
+    if feature_enabled(&toml, "seeders") {
+        expect_dir(&mut checks, &project.seeders_dir(), "seeders/");
+    } else {
+        checks.push(ok("seeders/", "未开启 [features].seeders（lean 默认）"));
+    }
 
     // route.rs
     if project.src_dir().join("route.rs").is_file() {
@@ -222,6 +285,12 @@ pub fn run(project: &Project, with_compile: bool) -> Result<(), String> {
         println!("✓ doctor 通过（mode={mode}）");
         Ok(())
     }
+}
+
+fn feature_enabled(toml: &str, key: &str) -> bool {
+    let needle_a = format!("{key} = true");
+    let needle_b = format!("{key}=true");
+    toml.contains(&needle_a) || toml.contains(&needle_b)
 }
 
 fn namix_feature_enabled(cargo_manifest: &str, feature: &str) -> bool {

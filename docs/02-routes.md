@@ -21,27 +21,35 @@
 ```rust
 use namix::prelude::*;
 
-use crate::controllers::{auth, demo, home, me, posts, profile};
-use crate::middleware::auth::{require_login, require_vip};
+use crate::controllers::{auth, home, me, posts};
+use crate::middleware::auth::{require_guest, require_login, require_vip};
 
 pub fn routes() -> Router {
     routes! {
         "/" => {
             GET "/" => home::index, name: "home",
             GET "/login" => auth::login, name: "login",
+                middleware = [require_guest],
             GET "/register" => auth::register, name: "register",
+                middleware = [require_guest],
+            POST "/logout" => auth::logout_page, name: "logout",
             GET "/vip" => home::vip_lounge, name: "vip",
                 middleware = [require_login, require_vip],
         },
         "/" => {
             GET "/me" => me::show, name: "me",
             POST "/me" => me::save, name: "me.submit",
-            PATCH "/me" => me::save, name: "me.update",
+            GET "/posts" => posts::index, name: "posts",
+            POST "/posts" => posts::create, name: "posts.submit",
+            POST "/posts/:id" => posts::update, name: "posts.update",
+            POST "/posts/:id/delete" => posts::destroy, name: "posts.destroy",
             middleware: [require_login],
         },
     }
 }
 ```
+
+示例应用的完整表见 `app/src/routes/web.rs`。经典表单写操作用 **POST**（HTML 不便发 DELETE）；资源归属校验见 [授权](./07-authorization.md)。
 
 `routes!` 是业务侧的默认写法：同前缀的路由放一个组中，`middleware:` 对整组生效；单路由中间件写在该路由后，用 `middleware = [...]`。组中间件按源码顺序执行。
 
@@ -103,7 +111,7 @@ req.redirect_to(route::main::home)
 
 ```rust
 .middleware(app::middleware::logger::access_log)
-.middleware(app::middleware::session::hydrate)  // 解析会话 → req.set::<LoginUser>
+.middleware(app::middleware::session::hydrate)  // Cookie 或 Bearer(opaque|JWT) → req.set::<LoginUser>
 .routes(app::routes::web::routes())
 ```
 
@@ -111,6 +119,7 @@ req.redirect_to(route::main::home)
 
 ```rust
 .middleware(require_login)   // 无会话 → 去登录页
+.middleware(require_guest)   // 已登录 → 离开登录/注册页
 .middleware(require_vip)     // 非 VIP → 拒绝/跳转（见 auth 中间件实现）
 ```
 
@@ -118,9 +127,64 @@ req.redirect_to(route::main::home)
 
 认证提取器 `AuthUser` 依赖 `hydrate` 已写入 `LoginUser`；仅挂提取器、不挂 `require_login` 时，未登录会在 `FromRequest` 里被重定向。
 
+对具体资源的「能不能改这条」不靠中间件猜 body，而用 Policy：查库后 `authorize`（见 [授权](./07-authorization.md)）。
+
 ---
 
-## 4. Boot 自动挂载（你不用写）
+## 4. 资源路由 `resource`
+
+Laravel 风格七件套（`index` / `create` / `store` / `show` / `edit` / `update` / `destroy`）。未实现的动作默认 `405`。
+
+```rust
+use namix::prelude::*;
+
+#[derive(Clone)]
+struct PostsController;
+
+impl ResourceController for PostsController {
+    fn index(&self, _req: Request) -> ResourceFuture<'_> {
+        Box::pin(async { Ok(text("posts.index")) })
+    }
+    fn store(&self, req: Request) -> ResourceFuture<'_> {
+        Box::pin(async move {
+            // 提取器 / authorize / Service…
+            Ok(Response::redirect_see_other("/posts"))
+        })
+    }
+    fn update(&self, req: Request) -> ResourceFuture<'_> {
+        Box::pin(async move {
+            let _id = req.param_or("id", "");
+            Ok(Response::redirect_see_other("/posts"))
+        })
+    }
+    fn destroy(&self, req: Request) -> ResourceFuture<'_> {
+        Box::pin(async move {
+            let _id = req.param_or("id", "");
+            Ok(Response::redirect_see_other("/posts"))
+        })
+    }
+}
+
+// 在 routes() 里：
+// router.merge(resource("posts", PostsController))
+```
+
+| 方法 | 路径 | 路由名 |
+|------|------|--------|
+| GET | `/posts` | `posts.index` |
+| GET | `/posts/create` | `posts.create` |
+| POST | `/posts` | `posts.store` |
+| GET | `/posts/:id` | `posts.show` |
+| GET | `/posts/:id/edit` | `posts.edit` |
+| PATCH | `/posts/:id` | `posts.update` |
+| DELETE | `/posts/:id` | `posts.destroy` |
+
+骨架：`nx make resource Posts`。  
+仓库示例 `posts` **手写**了 `GET/POST /posts` 与 `POST /posts/:id`、`POST /posts/:id/delete`（便于 SSR 表单 + CSRF），API 形态可再改用 `resource` + PATCH/DELETE。
+
+---
+
+## 5. Boot 自动挂载（你不用写）
 
 `Boot::run` 会在业务 `web::routes()` 之外合并：
 
@@ -130,13 +194,14 @@ req.redirect_to(route::main::home)
 | `GET /__namix/routes` | 命名路由 JSON（调试 / 前端） |
 | `POST /api/a` | 所有 `#[server]` 的统一入口 |
 | `GET /__namix/props/:key` | SPA 拉 props |
-| `GET /build/*` | 生产静态资源 |
+| `GET /build/*` | 生产静态资源（始终注册） |
+| `GET {prefix}/build/*` | 可选：`NAMIX_ASSET_PREFIX` 非空时的公共 URL 别名（与 HTML 标签一致） |
 
 因此：**登录 Action 不会出现在 `web.rs`，但仍可被调用。**
 
 ---
 
-## 5. 前端如何用路由
+## 6. 前端如何用路由
 
 ```ts
 import { route } from '../routes'
@@ -156,7 +221,7 @@ import { Link } from '../namix'
 
 ---
 
-## 6. 新增一条业务路由的步骤
+## 7. 新增一条业务路由的步骤
 
 1. 写好 `controllers/xxx.rs` 里的 `async fn`
 2. 在 `web.rs` 的 `routes!` 表中注册 `METHOD "path" => controller, name: "…"`

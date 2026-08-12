@@ -122,12 +122,54 @@ ws.send('hello')
 |------|------|
 | `sse.ticks` | `GET /sse/ticks` → `controllers/realtime.rs` |
 | `ws.echo` | `WS /ws/echo` → 同上 |
+| `chat` / `ws.chat` | `GET /chat` + `WS /ws/chat` → `controllers/chat.rs` |
 
 ```bash
 nx dev -p 3000
 # 另开终端
 curl -N http://127.0.0.1:3000/sse/ticks
 ```
+
+---
+
+## 聊天室（鉴权 WS）
+
+示例大厅：页面 Island，浏览器连命名路由 `ws.chat`；握手阶段用 **Cookie 会话**解析用户，未登录发 System 提示后关闭。
+
+```rust
+// controllers/chat.rs（节选）
+pub async fn page(req: Request, user: AuthUser) -> Response {
+    req.view("chat")
+        .island()
+        .title("聊天室")
+        .data(ChatPage {
+            title: "聊天室".into(),
+            me: ChatUser::from(&*user),
+        })
+        .render()
+}
+
+pub async fn socket(req: Request, socket: WsSocket) {
+    let login = /* session_id_from + SessionService::resolve */;
+    // Hello { me } → subscribe → hub.join → 收 ClientMsg::Chat → hub.say
+}
+```
+
+前端 hook（`views/namix.ts` 导出）：
+
+```ts
+import { useChatChannel } from '../namix'
+
+const { me, status, users, lines, send } = useChatChannel(pageMe)
+// 连接 route.ws.chat()；身份以服务端 hello.me 为准
+send('hello') // → JSON { type: 'chat', text }
+```
+
+要点：
+
+1. **不要**用用户名比对「是否自己」——用 `me.id`。
+2. WS 不走 HTTP 中间件栈；鉴权在 handler 内读握手请求的 Cookie。
+3. 广播与 presence 在 `services/chat.rs` 的 `ChatHub`。
 
 ---
 

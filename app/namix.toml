@@ -23,12 +23,17 @@ url = "sqlite:./storage/namix.db"
 push_schema = true
 
 [features]
+# 目录开关（namix-build）：默认脚手架只开 pages；本示例打开完整业务面
+models = true
+services = true
 validators = true
 requests = false
-# pages=true → app/src/views/*.tsx（Laravel 风格 req.view）
 pages = true
+events = true
+listeners = true
+seeders = true
 # false=开发看明文 JSON 包络；true=生产整包 octet-stream（公钥在 WASM，无 /api/k）
-# 也可用 NAMIX_ACTION_SEAL=0|1；改开关后需 npm run build:wasm
+# 也可用 NAMIX_ACTION_SEAL=0|1 覆盖；改开关后需 npm run build:wasm
 action_seal = true
 
 # 邮件：log/file 都会写 storage 并打日志；后续可换 smtp
@@ -52,6 +57,16 @@ https_port = 3443
 http3 = true
 lan = false
 tls_hosts = ["localhost", "127.0.0.1"]
+
+# 会话持久化与时长：
+# - memory=单进程开发；生产滚动更新用 file（共享 dist/data）或 redis
+# - lifetime_secs：Cookie / opaque 会话绝对过期（默认 7 天）
+# - jwt_lifetime_secs：登录返回的 Bearer JWT（默认 1 小时）
+[session]
+driver = "memory"
+path = "./storage/sessions"
+lifetime_secs = 604800
+jwt_lifetime_secs = 3600
 
 # 浏览器写请求保护与默认限流预算。生产环境把 environment 改为 production，
 # 并通过 NAMIX_SESSION_SECRET 或 session_secret 提供高熵密钥。

@@ -25,6 +25,7 @@ pub struct Route {
 pub struct WsRoute {
     pattern: PathPattern,
     handler: WsHandlerFn,
+    middlewares: Vec<MiddlewareFn>,
     name: Option<String>,
 }
 
@@ -117,12 +118,25 @@ impl Route {
         WsRoute {
             pattern: PathPattern::parse(path),
             handler: handler.into_ws_handler(),
+            middlewares: Vec::new(),
             name: None,
         }
     }
 }
 
 impl WsRoute {
+    /// Run ordinary Namix middleware before the HTTP Upgrade is accepted.
+    /// Middleware may mutate the [`Request`] received by the WebSocket handler,
+    /// add headers to the `101` response, or short-circuit with an HTTP error.
+    pub fn middleware<F, Fut>(mut self, f: F) -> Self
+    where
+        F: Fn(Request, Next) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Response> + Send + 'static,
+    {
+        self.middlewares.push(wrap_middleware(f));
+        self
+    }
+
     pub fn name(mut self, name: impl super::IntoRouteName) -> Self {
         self.name = Some(name.into_route_name());
         self
@@ -132,6 +146,7 @@ impl WsRoute {
         Router::from_ws_entries(vec![WsRouteEntry {
             pattern: self.pattern,
             handler: self.handler,
+            middlewares: self.middlewares,
             name: self.name,
         }])
     }

@@ -38,8 +38,9 @@ export default function Island({
             共 {total} 条 · 每页 {perPage} 条 · 当前第 {page}/{totalPages} 页（显示 {from}–{to}）
           </p>
           <p className="mt-1 text-sm text-zinc-400">
-            Island：SSR HTML + 内联 <code className="rounded bg-zinc-200/70 px-1">__namix_page</code>{' '}
-            + 客户端 hydrate
+            Island：可选 SSR HTML + 内联{' '}
+            <code className="rounded bg-zinc-200/70 px-1">__namix_page</code>；有正文时 hydrate，
+            否则 mount
           </p>
         </header>
 

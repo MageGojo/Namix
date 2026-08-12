@@ -71,3 +71,39 @@
 - `WsError` 改为 JSON 序列化与传输错误枚举。
 
 详见 [`ERRORS.md`](./ERRORS.md)。
+
+## 2026-08-06：共享 Session Store 与滚动更新预检
+
+- 框架新增 `Session` / `SessionStore`：`MemorySessionStore`（开发默认）、`FileSessionStore`（经 `dist/data/storage` 共享）、`RedisSessionStore`（`RedisBackend` 适配）。
+- `[session]` 配置接入 Boot；生产默认拒绝 `memory`，可用 `NAMIX_ALLOW_MEMORY_SESSIONS=1` 显式接受维护窗口冷切。
+- 示例 `SessionService` 负责 Cookie HMAC 签名与 JWT 配对签发；持久化与撤销委托框架 Store。
+- `nx update` 在存在旧进程时强制检查共享会话驱动，避免交叠窗口会话丢失。
+
+## 2026-08-06：可配置会话时长与 JWT Bearer
+
+- `[session] lifetime_secs` / `jwt_lifetime_secs` 控制 Cookie 与 API access token 过期；`SessionService::cookie_options_for(ttl)` 支持单次自定义 Max-Age。
+- 框架 `namix::Jwt`（HS256）与 `session_secret` / Session Store 打通：JWT 携带 `sid`，登出与全设备撤销对 Cookie 与 Bearer 同时生效。
+- 登录/注册 Action 在写 Cookie 的同时返回 `access_token` / `token_type` / `expires_in`。
+
+## 2026-08-06：Crypt + 访客门禁 + 零授权前端
+
+- `namix::Crypt` 密封 Flash；`require_guest` 保护登录/注册页。
+- `AuthView` 服务端分区渲染；首页 props 改为 `greeting` + `navLinks`，移除 `username` / `isVip`。
+
+## 2026-08-06：授权文档（Policy vs 数据库资源）
+
+- 新增 [`07-authorization.md`](./07-authorization.md)：说明 Laravel 式 `authorize`——会话身份对照 DB 资源归属；更新 README / 控制器 / 安全边界 / 模型文档交叉引用。
+
+## 2026-08-10：子路径静态资源（反哺自 live-relay `/lr` 白屏）
+
+- `namix-http`：`NAMIX_ASSET_PREFIX` / `NAMIX_ASSET_BASE` → HTML 标签与 `/…/build/*` 别名路由；manifest 剥离带前缀的 Vite `base`。
+- `nx` Vite 模板：`productionAssetBase()` 与上述环境变量对齐。
+- 文档：[`05-frontend.md`](./05-frontend.md)、[`02-routes.md`](./02-routes.md)、[`DECISIONS.md`](./DECISIONS.md)。
+- 验收：`cargo test -p namix-http --features pages assets::` 单测；默认行为仍为 `/build`。
+
+## 2026-08-12：教学文档全量对齐 + PostPolicy 示例
+
+- 示例应用落地 `PostPolicy`：`create` / `update` / `destroy` 经 `authorize`；SSR 表单补 `CsrfField`；路由 `posts.update` / `posts.destroy`。
+- 教学系列纠错：登出 POST+CSRF、Service `AppError`、TrustedProxies、Action 路径 `/api/a`。
+- 新增 [`08-platform.md`](./08-platform.md)、[`09-mail-sms.md`](./09-mail-sms.md)、[`10-events.md`](./10-events.md)、[`11-jwt-crypt.md`](./11-jwt-crypt.md)；扩写 06 聊天室、07 按真实代码、ERRORS / README 索引。
+- 验收：`cargo test -p app --lib policies::post_policy`。

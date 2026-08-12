@@ -8,12 +8,15 @@ use crate::services::session::{session_id_from, LoginUser, SessionService};
 
 /// 全局中间件：有合法会话则 `req.set(LoginUser)`，无会话则放行（公开页）。
 pub async fn hydrate(mut req: Request, next: Next) -> Response {
-    if req.get::<LoginUser>().is_none()
-        && let Some(id) = session_id_from(&req)
-    && let Some(user) = SessionService::new().resolve(&id)
-    {
-        namix::set_user_subject(&mut req, user.id);
-        req.set(user);
+    if req.get::<LoginUser>().is_none() && let Some(id) = session_id_from(&req) {
+        match SessionService::new().resolve(&id) {
+            Ok(Some(user)) => {
+                namix::set_user_subject(&mut req, user.id);
+                req.set(user);
+            }
+            Ok(None) => {}
+            Err(error) => return error.into_response_for(&req),
+        }
     }
     next.run(req).await
 }

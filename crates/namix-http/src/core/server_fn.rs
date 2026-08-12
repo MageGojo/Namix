@@ -139,6 +139,14 @@ fn write_keypair(path: &Path, secret: &[u8; 32], public: &[u8; 32]) {
     buf[32..].copy_from_slice(public);
     if let Err(e) = fs::write(path, buf) {
         eprintln!("[namix] warn: cannot persist {KEY_FILE}: {e}");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+            eprintln!("[namix] warn: cannot chmod 0600 {KEY_FILE}: {error}");
+        }
     }
 }
 
@@ -613,7 +621,7 @@ fn action_error_json(status: StatusCode, err: &ActionError) -> Response {
 pub fn parse_json_body<T: serde::de::DeserializeOwned>(req: &Request) -> Result<T, Response> {
     match req.json::<T>() {
         Ok(v) => Ok(v),
-        Err(e) => Err(action_error(StatusCode::BAD_REQUEST, e)),
+        Err(e) => Err(action_error(StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 

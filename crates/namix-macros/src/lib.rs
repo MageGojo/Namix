@@ -2,6 +2,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
+use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
@@ -33,12 +34,20 @@ pub fn server(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let fn_name = &func.sig.ident;
-    let fn_name_str = fn_name.to_string();
+    let fn_name_str = fn_name.unraw().to_string();
     let action_name = args
         .name
         .as_ref()
         .map(|s| s.value())
         .unwrap_or_else(|| fn_name_str.clone());
+    if let Err(message) = validate_action_name(&action_name) {
+        let span = args
+            .name
+            .as_ref()
+            .map(LitStr::span)
+            .unwrap_or_else(|| fn_name.span());
+        return syn::Error::new(span, message).to_compile_error().into();
+    }
 
     let vis = &func.vis;
     let attrs = &func.attrs;
@@ -64,15 +73,12 @@ pub fn server(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let seal_names: Vec<String> = args.seal.iter().map(|s| s.value()).collect();
-    // 仅 `(Request)` 时 body 仍在 req 里（FormRequest）；有 seal 字段也生成带 input 的 TS
-    let has_json_body = !seal_names.is_empty()
-        || inputs.iter().any(|a| match a {
-            FnArg::Typed(pt) => !is_request_type(&pt.ty),
-            _ => false,
-        });
+    // `(Request)` may consume a browser-supplied form/JSON body even though the
+    // Rust function receives no separate DTO. Keep that input optional in TS;
+    // sealing controls transport only and must not change the function arity.
+    let input_mode = server_action_input_mode(inputs.as_slice());
     let action_tok = fnv_action_token(&action_name);
-    write_server_action_ts(&action_name, &action_tok, has_json_body, &seal_names);
+    write_server_action_ts(&action_name, &action_tok, input_mode);
 
     quote! {
         #(#attrs)*
@@ -122,6 +128,75 @@ fn fnv_action_token(name: &str) -> String {
 
 fn is_request_type(ty: &Type) -> bool {
     matches!(type_path_name(ty).as_deref(), Some("Request"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerActionInputMode {
+    None,
+    Optional,
+    Required,
+}
+
+fn server_action_input_mode(inputs: &[&FnArg]) -> ServerActionInputMode {
+    match inputs {
+        [] => ServerActionInputMode::None,
+        [FnArg::Typed(pt)] if is_request_type(&pt.ty) => ServerActionInputMode::Optional,
+        _ => ServerActionInputMode::Required,
+    }
+}
+
+fn validate_action_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err("#[server] action name must not be empty".into());
+    };
+    if !(first.is_ascii_alphabetic() || first == '_')
+        || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Err(format!(
+            "invalid #[server] action name `{name}`: expected an ASCII Rust/TypeScript identifier (`[A-Za-z_][A-Za-z0-9_]*`)"
+        ));
+    }
+    if syn::parse_str::<Ident>(name).is_err() || is_reserved_action_identifier(name) {
+        return Err(format!(
+            "invalid #[server] action name `{name}`: language keywords are not valid generated function names"
+        ));
+    }
+    if is_reserved_filename(name) {
+        return Err(format!(
+            "invalid #[server] action name `{name}`: the generated filename is reserved"
+        ));
+    }
+    Ok(())
+}
+
+fn is_reserved_action_identifier(name: &str) -> bool {
+    matches!(
+        name,
+        // Rust keywords and reserved words.
+        "as" | "break" | "const" | "continue" | "crate" | "else" | "enum"
+            | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let"
+            | "loop" | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return"
+            | "self" | "Self" | "static" | "struct" | "super" | "trait" | "true"
+            | "type" | "unsafe" | "use" | "where" | "while" | "async" | "await"
+            | "dyn" | "abstract" | "become" | "box" | "do" | "final" | "macro"
+            | "override" | "priv" | "typeof" | "unsized" | "virtual" | "yield" | "try"
+            | "union" | "gen"
+            // JavaScript/TypeScript keywords not already listed above.
+            | "case" | "catch" | "class" | "debugger" | "default" | "delete" | "export"
+            | "extends" | "finally" | "function" | "import" | "instanceof" | "new"
+            | "null" | "switch" | "this" | "throw" | "var" | "void" | "with"
+            | "implements" | "interface" | "package" | "private" | "protected"
+            | "public" | "arguments" | "eval"
+    )
+}
+
+fn is_reserved_filename(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && matches!(upper.as_bytes()[3], b'1'..=b'9'))
 }
 
 fn server_call_tokens(
@@ -237,33 +312,8 @@ impl Parse for ServerAttrArg {
     }
 }
 
-fn write_server_action_ts(
-    action_name: &str,
-    action_tok: &str,
-    has_json_body: bool,
-    _seal: &[String],
-) {
-    let fn_ts = if has_json_body {
-        format!(
-            "/** action `{action_name}` → token `{action_tok}`（路径已混淆） */\n\
-             export function {action_name}(input: Record<string, unknown>): Promise<Record<string, unknown>> {{\n\
-             \treturn callRust('{action_tok}', input)\n\
-             }}\n"
-        )
-    } else {
-        format!(
-            "/** action `{action_name}` → token `{action_tok}` */\n\
-             export function {action_name}(): Promise<Record<string, unknown>> {{\n\
-             \treturn callRust('{action_tok}')\n\
-             }}\n"
-        )
-    };
-
-    let body = format!(
-        "/* @generated by #[server(\"{action_name}\")] — DO NOT EDIT */\n\
-         import {{ callRust }} from '../callRust'\n\n\
-         {fn_ts}"
-    );
+fn write_server_action_ts(action_name: &str, action_tok: &str, input_mode: ServerActionInputMode) {
+    let body = render_server_action_ts(action_name, action_tok, input_mode);
 
     let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else {
         return;
@@ -275,6 +325,39 @@ fn write_server_action_ts(
         let _ = std::fs::write(&path, body);
     }
     rewrite_actions_barrel(&dir);
+}
+
+fn render_server_action_ts(
+    action_name: &str,
+    action_tok: &str,
+    input_mode: ServerActionInputMode,
+) -> String {
+    let fn_ts = match input_mode {
+        ServerActionInputMode::Required => format!(
+            "/** action `{action_name}` → token `{action_tok}`（路径已混淆） */\n\
+             export function {action_name}(input: Record<string, unknown>): Promise<Record<string, unknown>> {{\n\
+             \treturn callRust('{action_tok}', input)\n\
+             }}\n"
+        ),
+        ServerActionInputMode::Optional => format!(
+            "/** action `{action_name}` → token `{action_tok}`（路径已混淆） */\n\
+             export function {action_name}(input?: Record<string, unknown>): Promise<Record<string, unknown>> {{\n\
+             \treturn callRust('{action_tok}', input)\n\
+             }}\n"
+        ),
+        ServerActionInputMode::None => format!(
+            "/** action `{action_name}` → token `{action_tok}` */\n\
+             export function {action_name}(): Promise<Record<string, unknown>> {{\n\
+             \treturn callRust('{action_tok}')\n\
+             }}\n"
+        ),
+    };
+
+    format!(
+        "/* @generated by #[server(\"{action_name}\")] — DO NOT EDIT */\n\
+         import {{ callRust }} from '../callRust'\n\n\
+         {fn_ts}"
+    )
 }
 
 fn rewrite_actions_barrel(actions_dir: &std::path::Path) {
@@ -418,13 +501,13 @@ impl Parse for RouteAttr {
 /// 分组路由宏。
 ///
 /// - 组中间件：`middleware: [a, b]`（独立一行，`:`）
-/// - 单路由中间件：`middleware = [a]`（跟在路由后，`=`，避免吃掉组中间件）
+/// - 单路由中间件：`middleware = [a]`（HTTP 与 WS 均支持）
 ///
 /// ```ignore
 /// routes! {
 ///     "/api" => {
 ///         GET "/me" => user::me, name: "user.me", middleware = [auth],
-///         WS "/events" => user::events, name: "user.events",
+///         WS "/events" => user::events, name: "user.events", middleware = [auth],
 ///         middleware: [logger],
 ///     },
 /// }
@@ -442,20 +525,15 @@ pub fn routes(input: TokenStream) -> TokenStream {
                 Some(name) => quote!(.name(#name)), // LitStr 或 route::user::login
                 None => quote!(),
             };
+            let mw_tokens = r.middlewares.iter().map(|mw| quote!(.middleware(#mw)));
 
             if method == "WS" {
-                if let Some(middleware) = r.middlewares.first() {
-                    return syn::Error::new_spanned(
-                        middleware,
-                        "WebSocket routes do not support per-route middleware; inspect Request in the handler",
-                    )
-                    .to_compile_error();
-                }
                 return quote! {
                     {
                         let full = ::namix::routing_path_join(#prefix, #path);
                         let route = ::namix::Route::ws(&full, #handler)
-                            #name_tokens;
+                            #name_tokens
+                            #(#mw_tokens)*;
                         __group_router = __group_router.merge(route.register());
                     }
                 };
@@ -475,7 +553,6 @@ pub fn routes(input: TokenStream) -> TokenStream {
                     .to_compile_error();
                 }
             };
-            let mw_tokens = r.middlewares.iter().map(|mw| quote!(.middleware(#mw)));
             quote! {
                 {
                     let full = ::namix::routing_path_join(#prefix, #path);
@@ -1312,5 +1389,61 @@ fn write_generated_ts(stem: &str, body: &str) {
     let path = dir.join(format!("{stem}.ts"));
     if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
         let _ = std::fs::write(path, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn request_only_server_action_has_optional_browser_input() {
+        let request: FnArg = parse_quote!(req: Request);
+        let inputs = [&request];
+        let mode = server_action_input_mode(&inputs);
+        assert_eq!(mode, ServerActionInputMode::Optional);
+
+        let ts = render_server_action_ts("submit", "deadbeef", mode);
+        assert!(ts.contains("function submit(input?: Record<string, unknown>)"));
+        assert!(ts.contains("callRust('deadbeef', input)"));
+    }
+
+    #[test]
+    fn no_arg_and_dto_actions_keep_distinct_ts_arities() {
+        let dto: FnArg = parse_quote!(input: LoginInput);
+        let dto_inputs = [&dto];
+
+        let no_input = render_server_action_ts("ping", "00000000", server_action_input_mode(&[]));
+        let required =
+            render_server_action_ts("login", "11111111", server_action_input_mode(&dto_inputs));
+
+        assert!(no_input.contains("function ping()"));
+        assert!(no_input.contains("callRust('00000000')"));
+        assert!(required.contains("function login(input: Record<string, unknown>)"));
+    }
+
+    #[test]
+    fn action_names_are_safe_rust_ts_identifiers_and_filenames() {
+        for name in ["login", "send_code_2", "_health"] {
+            assert!(validate_action_name(name).is_ok(), "{name}");
+        }
+        for name in [
+            "",
+            "user.login",
+            "user-login",
+            "../login",
+            "1login",
+            "登录",
+            "delete",
+            "match",
+            "gen",
+            "eval",
+            "arguments",
+            "CON",
+            "COM1",
+        ] {
+            assert!(validate_action_name(name).is_err(), "{name}");
+        }
     }
 }

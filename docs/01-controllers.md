@@ -52,8 +52,9 @@ pub async fn login(req: Request) -> Response {
 
 | 模式 | 何时用 | 行为 |
 |------|--------|------|
-| `.ssr()` | 资料页、文章列表、纯展示 | 服务端 HTML，**不加载**客户端 React |
-| `.island()` | 登录/注册等要交互 | SSR HTML + hydrate，可用 `useForm` / `Link` |
+| `.ssr_html(html)` | Rust 模板、经典表单 | 直接输出可信的服务端 HTML，不加载客户端 React |
+| `.ssr()` | React 展示页、SSR 优先 | 有 Rust 正文时输出纯 HTML；正文为空时自动内联 props 并挂载，避免白屏 |
+| `.island()` | 登录/注册等要交互 | 可选 SSR HTML + 内联 props；客户端 mount/hydrate，可用 `useForm` / `Link` |
 | `.spa()`（默认） | 只要客户端挂载 | 空壳 + props key，前端再拉 props |
 
 `view("login")` 的名字必须和 `views/pages/login.tsx`、生成注册表一致。
@@ -67,7 +68,28 @@ req.param("id")                   // 路径参数（字符串）
 req.header("authorization")
 req.cookie("namix_session")
 req.json::<T>()                   // body JSON
-req.flash()                       // 闪存（读一次后通常被 consume）
+req.flash()                       // 闪存（读一次后通常被 consume；Crypt 自动加密封装）
+```
+
+### 零授权 props（重要）
+
+页面 **不要** 把 `userId` / `isVip` / roles / token 放进 `ViewData`。用 `AuthView` 在服务端分支，只下发展示数据：
+
+```rust
+let auth = AuthView::new(current(&req));
+let (greeting, nav_links) = auth.choose(
+    || ("未登录".into(), guest_nav()),
+    |user| (format!("你好，{}", user.username), user_nav(user)), // VIP 链接只在这里插入
+);
+```
+
+已登录禁止访问登录/注册：路由挂 `require_guest`。
+
+写操作（更新/删除资源）不要信前端的 `user_id`：从数据库加载模型，再用 `authorize` 比对会话用户与库里的归属。详见 [授权](./07-authorization.md)。
+
+```rust
+let post = Post::find(form.post_id).await.ok_or(AppError::NotFound)?;
+authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
 ```
 
 ---
@@ -86,33 +108,53 @@ import { login } from '../generated/actions/login'
 #[derive(Debug, Serialize)]
 pub struct AuthOk {
     pub redirect: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in: Option<u64>,
 }
 
 /// seal：这些字段在传输层加密（需 action_seal 开启）
 #[server(name = "register", seal = ["password", "password_confirmation"])]
-pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, ActionError> {
-    // 校验失败 → ValidationError → 自动变成 ActionError（字段袋）
+pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
+    // 校验失败 → ValidationError → 自动变成 AppError / ActionError（字段袋）
     let form = RegisterRequest::from_values(&req)?;
-
-    let user = match UserService::new()
+    let user = UserService::new()
         .register(&form.username, &form.password)
-        .await
-    {
-        Ok(u) => u,
-        Err(e) if e.contains("taken") => {
-            return Err(ActionError::field("username", "username already taken"));
-        }
-        Err(e) => return Err(ActionError::message(e)),
-    };
+        .await?;
 
-    let session_id = SessionService::new().issue(&user);
+    // Cookie opaque + JWT Bearer 共用同一 sid（SessionStore）
+    let tokens = SessionService::new().rotate_pair(session_id_from(&req).as_deref(), &user);
 
-    Ok(ActionOk::new(AuthOk {
-        redirect: "/me".into(),
-    })
-    .with_cookie(SESSION_COOKIE, session_id)
-    .with_clear_cookie(LEGACY_SESSION_COOKIE))
+    Ok(ActionOk::new(AuthOk::with_tokens("/me", &tokens))
+        .with_cookie_options(
+            SESSION_COOKIE,
+            tokens.cookie_token,
+            SessionService::cookie_options(), // Max-Age = [session].lifetime_secs
+        )
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
 }
+```
+
+登录/注册成功体大致为：
+
+```json
+{
+  "redirect": "/me",
+  "access_token": "eyJ…",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+浏览器 SPA 继续跟 `redirect`；API / 移动端用 `Authorization: Bearer <access_token>`。时长见 `namix.toml`：
+
+```toml
+[session]
+lifetime_secs = 604800       # Cookie / opaque
+jwt_lifetime_secs = 3600     # Bearer JWT
 ```
 
 ### 错误 API（给前端 `useForm`）
@@ -129,12 +171,20 @@ JSON 形态大致为：
 { "error": "...", "message": "...", "errors": { "username": "...", "password": "..." } }
 ```
 
-### 成功时的 cookie
+### 成功时的 cookie / JWT
 
 ```rust
-ActionOk::new(data)
-    .with_cookie("namix_session", id)
-    .with_clear_cookie("namix_user")   // 清旧 cookie
+// 推荐：带 Max-Age（Laravel 式可配置过期）
+ActionOk::new(AuthOk::with_tokens("/me", &tokens))
+    .with_cookie_options(
+        SESSION_COOKIE,
+        tokens.cookie_token,
+        SessionService::cookie_options(),
+    )
+    .with_clear_cookie(LEGACY_SESSION_COOKIE)
+
+// 单次自定义时长（例如「记住我」30 天）
+SessionService::cookie_options_for(Duration::from_secs(60 * 60 * 24 * 30))
 ```
 
 前端 `useForm` 默认会跟随返回体里的 `redirect` 做软导航。
@@ -145,7 +195,7 @@ ActionOk::new(data)
 |------|------|
 | `async fn foo(req: Request) -> ...` | 最常用 |
 | `async fn foo(req: Request, body: T) -> ...` | 额外类型参数（按宏支持） |
-| 返回 `Result<ActionOk<T>, ActionError>` | 推荐 |
+| 返回 `Result<ActionOk<T>, ActionError>` 或 `AppError` | 推荐 |
 
 **不要**把 `FormRequest` 当作 handler 提取器用在 `#[server]` 上——提取器失败会走 HTML 闪存跳转；Action 里应 `from_values(&req)?`。
 
@@ -166,7 +216,7 @@ pub async fn save(req: Request, user: AuthUser, form: ProfileRequest) -> Respons
         .await
     {
         Ok(_) => req.redirect_ok_to(route::main::me),
-        Err(msg) => req.redirect_error_to(route::main::me, msg),
+        Err(error) => req.redirect_error_to(route::main::me, error.message()),
     }
 }
 ```
@@ -226,16 +276,77 @@ Response::redirect("/login")              // 302
 Response::redirect_see_other("/login")    // 303
 ```
 
-登出示例（SSR 顶栏可能无 hydrate，故用 GET）：
+登出用 **POST**（经 Origin + CSRF）。SSR 顶栏无 hydrate 时，用经典 `<form method="post">` + `<CsrfField />`，不要改成 GET：
 
 ```rust
+/// 经典表单退出；POST 会经过 Origin + CSRF 校验。
 pub async fn logout_page(req: Request) -> Response {
-    // 清会话…
+    if let Some(sid) = session_id_from(&req) {
+        if let Err(error) = SessionService::new().revoke(&sid) {
+            return error.into_response_for(&req);
+        }
+    }
     Response::redirect_see_other("/")
-        .with_clear_cookie(SESSION_COOKIE)
+        .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
         .with_clear_cookie(LEGACY_SESSION_COOKIE)
 }
 ```
+
+Island / Action 侧也可调用生成的 `logout`：
+
+```rust
+#[server(name = "logout")]
+pub async fn logout_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
+    if let Some(sid) = session_id_from(&req) {
+        SessionService::new().revoke(&sid)?;
+    }
+    Ok(ActionOk::new(AuthOk::redirect_only("/"))
+        .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
+}
+```
+
+### 全设备登出与密码重置
+
+```rust
+/// 结束当前用户全部设备会话（含本机）。
+#[server(name = "logout_all")]
+pub async fn logout_all_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
+    let user = req.get::<LoginUser>().ok_or(AppError::Unauthenticated)?;
+    SessionService::new().revoke_all_for_user(user.id)?;
+    Ok(ActionOk::new(AuthOk::redirect_only("/"))
+        .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
+}
+
+/// 申请重置：无论账号是否存在，响应形状相同，避免枚举用户。
+#[server(name = "password_reset_request", seal = ["username"])]
+pub async fn password_reset_request_action(
+    req: Request,
+) -> Result<ActionOk<PasswordResetOk>, AppError> { /* … */ }
+
+/// 消费一次性 token（默认 30 分钟）→ 改密 → revoke_all → 跳转登录。
+#[server(name = "password_reset_confirm", seal = ["token", "password"])]
+pub async fn password_reset_confirm_action(
+    req: Request,
+) -> Result<ActionOk<AuthOk>, AppError> { /* … */ }
+```
+
+对照实现：`app/src/controllers/auth.rs`、`services/password_reset.rs`；前端 `generated/actions/logout_all.ts` 等。JWT / 密封细节见 [JWT 与 Crypt](./11-jwt-crypt.md)。
+
+写路径授权示例（真实代码在 `controllers/posts.rs` + `policies/post_policy.rs`）：
+
+```rust
+pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<Response, AppError> {
+    let id = req.param("id").and_then(|s| s.parse().ok()).ok_or(AppError::NotFound)?;
+    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+    authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
+    UserService::new().update_post(post.id, &form.title, &form.body).await?;
+    Ok(req.see_other_to(route::main::posts))
+}
+```
+
+错误边界见 [错误模型](./ERRORS.md)。
 
 ---
 

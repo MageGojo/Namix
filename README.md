@@ -50,7 +50,11 @@ pub fn routes() -> Router {
 
 命名路由会生成 Rust 侧的 `route::main::*` 以及 TypeScript 侧的 `route.*()`；控制器可通过 `req.redirect_to(route::main::posts_index)` 跳转，页面不必硬编码 URI。
 
-更多业务示例见 [`docs/README.md`](./docs/README.md)，架构与质量状态见 [`docs/PROJECT.md`](./docs/PROJECT.md) 和 [`docs/PROGRESS.md`](./docs/PROGRESS.md)。生产发布流程见 [`docs/PRODUCTION.md`](./docs/PRODUCTION.md)。
+更多业务示例见 [`docs/README.md`](./docs/README.md)（含 [授权 Policy/Gate](./docs/07-authorization.md)），架构与质量状态见 [`docs/PROJECT.md`](./docs/PROJECT.md) 和 [`docs/PROGRESS.md`](./docs/PROGRESS.md)。生产发布流程见 [`docs/PRODUCTION.md`](./docs/PRODUCTION.md)。
+
+## AI / Agent 开发
+
+Namix **不是**前后端分离。写功能前先读 [`AGENTS.md`](./AGENTS.md) 与 [`.cursor/skills/namix/SKILL.md`](./.cursor/skills/namix/SKILL.md)：页面由 Rust `req.view` 渲染，交互走 `#[server]` / 经典表单 + CSRF，勿另起 SPA + REST。
 
 ## 常用质量命令
 
@@ -65,4 +69,4 @@ cargo build -p app --profile release-min --bin app
 
 ## 当前边界
 
-Namix 已具备 P0 安全底座及 P1/P2 首版开发 API。发布链采用不可变 `dist/<version>`、共享 `dist/data`、候选 PID 就绪校验、`current` 原子切换和旧进程排水。生产无感更新仍要求共享 Session Store；默认进程内会话仅适合单进程开发。
+Namix 已具备 P0 安全底座及 P1/P2 首版开发 API。发布链采用不可变 `dist/<version>`、共享 `dist/data`、候选 PID 就绪校验、`current` 原子切换和旧进程排水。会话由框架 `SessionStore` 提供：默认 `memory` 仅适合单进程开发；生产滚动更新使用 `[session] driver = "file"`（共享数据面）或接入 `redis`，并由 `nx update` 预检强制约束。浏览器用 opaque Cookie，API 可用 HS256 JWT Bearer（`lifetime_secs` / `jwt_lifetime_secs`）；两者共享 `sid`，可一并撤销。

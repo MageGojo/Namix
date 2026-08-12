@@ -31,7 +31,7 @@ pub use tls::TlsConfig;
 use super::middleware::{MiddlewareFn, Next, wrap_middleware};
 use super::request::Request;
 use super::response::{Body, Response};
-use super::routing::{RouteCatalog, Router};
+use super::routing::{RouteCatalog, Router, WsHandshakeOutcome};
 
 struct App {
     router: Router,
@@ -537,32 +537,40 @@ async fn handle_hyper(
     app: Arc<App>,
     peer: SocketAddr,
 ) -> Result<HyperResponse<Body>, Infallible> {
-    // WebSocket：必须在消费 body 前接管 upgrade
+    // WebSocket：在消费 body 前保留 Hyper Upgrade，但先让普通 Namix
+    // middleware 对轻量 Request 完成鉴权、限流与上下文注入。
     if crate::core::ws::is_upgrade_request(req.headers()) {
-        let path = req.uri().path().to_string();
-        if let Some((route, params)) = app.router.match_ws(&path) {
-            let key = req
-                .headers()
-                .get("sec-websocket-key")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            let namix_req = crate::core::ws::namix_request_from_hyper(&req, params);
-            let mut namix_req = namix_req;
-            namix_req.set_routes(Arc::clone(&app.routes));
-            namix_req.set_client_ip(peer.ip());
-            let handler = Arc::clone(&route.handler);
-            tokio::spawn(async move {
-                crate::core::ws::run_upgraded(req, namix_req, handler).await;
-            });
-            return Ok(crate::core::ws::switching_protocols(&key));
+        let key = req
+            .headers()
+            .get("sec-websocket-key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let mut namix_req = crate::core::ws::namix_request_from_hyper(&req, Vec::new());
+        namix_req.set_routes(Arc::clone(&app.routes));
+        namix_req.set_client_ip(peer.ip());
+
+        match app
+            .router
+            .dispatch_ws_handshake(namix_req, Arc::clone(&app.middlewares))
+            .await
+        {
+            WsHandshakeOutcome::Accepted {
+                request,
+                handler,
+                middleware_response,
+            } => {
+                let response = crate::core::ws::switching_protocols_with_headers(
+                    &key,
+                    middleware_response.headers(),
+                );
+                tokio::spawn(async move {
+                    crate::core::ws::run_upgraded(req, request, handler).await;
+                });
+                return Ok(response);
+            }
+            WsHandshakeOutcome::Rejected(response) => return Ok(response.into_inner()),
         }
-        // 有 Upgrade 头但无匹配路由 → 404
-        return Ok(crate::core::ws::reject(
-            http::StatusCode::NOT_FOUND,
-            "websocket route not found",
-        )
-        .into_inner());
     }
 
     let (parts, body) = req.into_parts();

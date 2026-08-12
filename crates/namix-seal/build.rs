@@ -1,5 +1,6 @@
 //! 生成嵌入 WASM 的应用 X25519 公钥 + seal 开关。
-//! 密钥文件与服务端共用：`app/storage/action_seal.key`（64B = secret||public）。
+//! 密钥文件与服务端共用：`APP_DIR/storage/action_seal.key`（64B = secret||public）。
+//! 生产构建可只传 `NAMIX_ACTION_SEAL_PUBLIC_KEY=<64 hex>`，无需把私钥带到构建机。
 
 use std::env;
 use std::fs;
@@ -9,14 +10,23 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let key_path = manifest.join("../../app/storage/action_seal.key");
-    let toml_path = manifest.join("../../app/namix.toml");
+    let app_dir = env::var_os("NAMIX_APP_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest.join("../../app"));
+    let key_path = app_dir.join("storage/action_seal.key");
+    let toml_path = app_dir.join("namix.toml");
 
     println!("cargo:rerun-if-changed={}", key_path.display());
     println!("cargo:rerun-if-changed={}", toml_path.display());
     println!("cargo:rerun-if-env-changed=NAMIX_ACTION_SEAL");
+    println!("cargo:rerun-if-env-changed=NAMIX_ACTION_SEAL_PUBLIC_KEY");
+    println!("cargo:rerun-if-env-changed=NAMIX_APP_DIR");
 
-    let (_secret, public) = load_or_create_keypair(&key_path);
+    let public = match env::var("NAMIX_ACTION_SEAL_PUBLIC_KEY") {
+        Ok(raw) => parse_public_key(&raw)
+            .unwrap_or_else(|error| panic!("invalid NAMIX_ACTION_SEAL_PUBLIC_KEY: {error}")),
+        Err(_) => load_or_create_keypair(&key_path).1,
+    };
     let seal = read_seal_flag(&toml_path);
 
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -30,6 +40,22 @@ fn main() {
         format!("pub const SPK: [u8; 32] = [{spk_lit}];\npub const SEAL_ENABLED: bool = {seal};\n"),
     )
     .expect("write embed.rs");
+}
+
+fn parse_public_key(raw: &str) -> Result<[u8; 32], String> {
+    let raw = raw.trim().strip_prefix("0x").unwrap_or(raw.trim());
+    if raw.len() != 64 {
+        return Err(format!(
+            "expected 64 hexadecimal characters, got {}",
+            raw.len()
+        ));
+    }
+    let mut public = [0u8; 32];
+    for (index, byte) in public.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&raw[index * 2..index * 2 + 2], 16)
+            .map_err(|_| format!("non-hex byte at offset {}", index * 2))?;
+    }
+    Ok(public)
 }
 
 fn load_or_create_keypair(path: &Path) -> ([u8; 32], [u8; 32]) {
@@ -68,6 +94,12 @@ fn write_keypair(path: &Path, secret: &[u8; 32], public: &[u8; 32]) {
     buf[..32].copy_from_slice(secret);
     buf[32..].copy_from_slice(public);
     fs::write(path, buf).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .unwrap_or_else(|e| panic!("chmod 0600 {}: {e}", path.display()));
+    }
 }
 
 fn read_seal_flag(toml_path: &Path) -> bool {

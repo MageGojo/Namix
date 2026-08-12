@@ -38,7 +38,14 @@ impl RouteCatalog {
     ) {
         let name = name.into();
         let path = path.into();
-        self.names.insert(name.clone(), path);
+        if let Some(existing) = self.names.get(&name) {
+            assert_eq!(
+                existing, &path,
+                "named route `{name}` is registered with conflicting URIs: `{existing}` and `{path}`"
+            );
+        } else {
+            self.names.insert(name.clone(), path);
+        }
         if let Some(m) = method {
             let list = self.methods.entry(name).or_default();
             let m = m.to_ascii_uppercase();
@@ -52,16 +59,17 @@ impl RouteCatalog {
         self.names.get(name).map(String::as_str)
     }
 
-    /// 用参数填充 `:id` 等占位符。
+    /// 用参数填充 `:id` / `*path` 等占位符。
     pub fn url(&self, name: &str, params: &[(&str, &str)]) -> Option<String> {
         let mut out = self.path(name)?.to_string();
         for (key, value) in params {
-            let token = format!(":{key}");
-            if out.contains(&token) {
-                out = out.replace(&token, value);
+            for token in [format!(":{key}"), format!("*{key}")] {
+                if out.contains(&token) {
+                    out = out.replace(&token, value);
+                }
             }
         }
-        if out.split('/').any(|seg| seg.starts_with(':')) {
+        if has_unfilled_param(&out) {
             return None;
         }
         Some(out)
@@ -124,12 +132,13 @@ impl RouteCatalog {
             let methods = item
                 .methods
                 .iter()
-                .map(|m| format!("\"{m}\""))
+                .map(|m| serde_json::to_string(m).expect("route method is serializable"))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let name = serde_json::to_string(&name).expect("route name is serializable");
+            let uri = serde_json::to_string(&item.uri).expect("route URI is serializable");
             body.push_str(&format!(
-                "  \"{name}\": {{ uri: \"{}\", methods: [{methods}] }},\n",
-                item.uri.replace('\\', "\\\\").replace('"', "\\\"")
+                "  {name}: {{ uri: {uri}, methods: [{methods}] }},\n"
             ));
         }
         body.push_str("};\n\n");
@@ -139,9 +148,10 @@ impl RouteCatalog {
                if (params) {\n\
                  for (const [k, v] of Object.entries(params)) {\n\
                    uri = uri.replace(`:${k}`, String(v));\n\
+                   uri = uri.replace(`*${k}`, String(v));\n\
                  }\n\
                }\n\
-               if (uri.split('/').some((s) => s.startsWith(':'))) {\n\
+               if (uri.split('/').some((s) => s.startsWith(':') || s.startsWith('*'))) {\n\
                  throw new Error(`route('${name}') missing params: ${uri}`);\n\
                }\n\
                return uri;\n\
@@ -165,6 +175,11 @@ impl RouteCatalog {
         }
         fs::write(path, self.to_js())
     }
+}
+
+fn has_unfilled_param(uri: &str) -> bool {
+    uri.split('/')
+        .any(|segment| segment.starts_with(':') || segment.starts_with('*'))
 }
 
 /// 类型化路由名（由 `route_names!` 生成，如 `route::user::login`）。
@@ -207,5 +222,55 @@ impl IntoRouteName for &String {
 impl<R: NamedRoute> IntoRouteName for R {
     fn into_route_name(self) -> String {
         self.route_name().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_name_and_uri_merge_distinct_methods() {
+        let mut catalog = RouteCatalog::new();
+        catalog.insert_with_method("posts.update", "/posts/:id", Some("PUT"));
+        catalog.insert_with_method("posts.update", "/posts/:id", Some("PATCH"));
+        catalog.insert_with_method("posts.update", "/posts/:id", Some("PATCH"));
+
+        let route = &catalog.export()["posts.update"];
+        assert_eq!(route.uri, "/posts/:id");
+        assert_eq!(route.methods, ["PATCH", "PUT"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "registered with conflicting URIs")]
+    fn same_name_with_different_uri_panics() {
+        let mut catalog = RouteCatalog::new();
+        catalog.insert_with_method("posts.show", "/posts/:id", Some("GET"));
+        catalog.insert_with_method("posts.show", "/articles/:id", Some("GET"));
+    }
+
+    #[test]
+    fn reverse_url_fills_colon_and_wildcard_params() {
+        let mut catalog = RouteCatalog::new();
+        catalog.insert("assets.show", "/teams/:team/assets/*path");
+
+        assert_eq!(
+            catalog.url(
+                "assets.show",
+                &[("team", "namix"), ("path", "images/logo.svg")]
+            ),
+            Some("/teams/namix/assets/images/logo.svg".into())
+        );
+        assert_eq!(catalog.url("assets.show", &[("team", "namix")]), None);
+    }
+
+    #[test]
+    fn generated_js_fills_wildcards_and_checks_missing_values() {
+        let mut catalog = RouteCatalog::new();
+        catalog.insert("assets.show", "/assets/*path");
+
+        let js = catalog.to_js();
+        assert!(js.contains("uri = uri.replace(`*${k}`, String(v));"));
+        assert!(js.contains("s.startsWith(':') || s.startsWith('*')"));
     }
 }

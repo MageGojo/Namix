@@ -38,8 +38,9 @@ export default function Demo({
             共 {total} 条 · 每页 {perPage} 条 · 当前第 {page}/{totalPages} 页（显示 {from}–{to}）
           </p>
           <p className="mt-1 text-sm text-zinc-400">
-            纯 SSR：无 <code className="rounded bg-zinc-200/70 px-1">__namix_page</code>、不加载
-            React JS
+            SSR 优先：当前 TSX 页面没有 Rust 正文时会内联{' '}
+            <code className="rounded bg-zinc-200/70 px-1">__namix_page</code> 并挂载客户端，
+            不依赖 Node
           </p>
         </header>
 

@@ -29,15 +29,29 @@ pub async fn page(req: Request, user: AuthUser) -> Response {
 
 /// WS /ws/chat — Cookie 会话鉴权后进入广播大厅。
 pub async fn socket(req: Request, socket: WsSocket) {
-    let Some(login) = resolve_user(&req) else {
-        let mut socket = socket;
-        let _ = socket
-            .send_json(&ServerMsg::System {
-                text: "请先登录".into(),
-            })
-            .await;
-        let _ = socket.close().await;
-        return;
+    let login = match resolve_user(&req) {
+        Ok(Some(login)) => login,
+        Ok(None) => {
+            let mut socket = socket;
+            let _ = socket
+                .send_json(&ServerMsg::System {
+                    text: "请先登录".into(),
+                })
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
+        Err(error) => {
+            namix::log::warn!("chat session lookup failed: {error}");
+            let mut socket = socket;
+            let _ = socket
+                .send_json(&ServerMsg::System {
+                    text: "会话服务暂时不可用".into(),
+                })
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
     };
 
     let me = ChatUser::from(&login);
@@ -86,7 +100,11 @@ pub async fn socket(req: Request, socket: WsSocket) {
     push.abort();
 }
 
-fn resolve_user(req: &Request) -> Option<crate::services::session::LoginUser> {
-    let id = session_id_from(req)?;
+fn resolve_user(
+    req: &Request,
+) -> Result<Option<crate::services::session::LoginUser>, AppError> {
+    let Some(id) = session_id_from(req) else {
+        return Ok(None);
+    };
     SessionService::new().resolve(&id)
 }

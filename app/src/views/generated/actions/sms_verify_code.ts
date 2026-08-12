@@ -2,6 +2,6 @@
 import { callRust } from '../callRust'
 
 /** action `sms_verify_code` → token `7e7b16ac`（路径已混淆） */
-export function sms_verify_code(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+export function sms_verify_code(input?: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return callRust('7e7b16ac', input)
 }

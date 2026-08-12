@@ -204,56 +204,15 @@ fn spawn_app(
     let mut cmd = if watch {
         let mut c = Command::new("cargo-watch");
         c.current_dir(&project.app_dir);
-        // 业务 + 框架 crates；忽略产物/存储
-        // 只盯业务/框架源码；避开 views、generated、Boot 写出的 routes.ts
-        c.args([
-            "-q",
-            "-d",
-            "1",
-            "-w",
-            "src/main.rs",
-            "-w",
-            "src/lib.rs",
-            "-w",
-            "src/route.rs",
-            "-w",
-            "src/controllers",
-            "-w",
-            "src/services",
-            "-w",
-            "src/models",
-            "-w",
-            "src/listeners",
-            "-w",
-            "src/middleware",
-            "-w",
-            "src/validators",
-            "-w",
-            "src/events",
-            "-w",
-            "src/routes",
-            "-w",
-            "src/seeders",
-            "-w",
-            "src/bin",
-            "-w",
-            "namix.toml",
-            "-w",
-            "Cargo.toml",
-            "-w",
-            "build.rs",
-            "-w",
-            "../crates/namix",
-            "-w",
-            "../crates/namix-http",
-            "-w",
-            "../crates/namix-macros",
-            "-w",
-            "../crates/namix-build",
-            "-i",
-            "target",
-            "-x",
-        ]);
+        c.args(["-q", "-d", "1"]);
+        // cargo-watch treats a missing -w path as fatal. Lean projects
+        // intentionally omit services/models/etc., so only register paths that
+        // exist. Absolute paths also work when a generated project lives outside
+        // the framework checkout.
+        for path in existing_watch_paths(&project.app_dir, &project.root) {
+            c.arg("-w").arg(path);
+        }
+        c.args(["-i", "target", "-x"]);
         // cargo-watch -x 吃一整条 cargo 子命令
         c.arg(run_args.join(" "));
         c
@@ -274,6 +233,51 @@ fn spawn_app(
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("启动 app 失败: {e}"))
+}
+
+fn existing_watch_paths(app: &Path, root: &Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    for relative in [
+        "src/main.rs",
+        "src/lib.rs",
+        "src/route.rs",
+        "src/controllers",
+        "src/services",
+        "src/models",
+        "src/listeners",
+        "src/middleware",
+        "src/validators",
+        "src/events",
+        "src/routes",
+        "src/seeders",
+        "src/jobs",
+        "src/mails",
+        "src/notifications",
+        "src/policies",
+        "src/bin",
+        "namix.toml",
+        "Cargo.toml",
+        "build.rs",
+    ] {
+        let path = app.join(relative);
+        if path.exists() {
+            paths.push(path);
+        }
+    }
+    for relative in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/namix",
+        "crates/namix-http",
+        "crates/namix-macros",
+        "crates/namix-build",
+    ] {
+        let path = root.join(relative);
+        if path.exists() && !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 fn wait_any_and_cleanup(kids: &mut [(&'static str, Child)]) -> i32 {
@@ -321,5 +325,36 @@ fn wait_any_and_cleanup(kids: &mut [(&'static str, Child)]) -> i32 {
             }
         }
         thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::existing_watch_paths;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn lean_watch_list_contains_only_existing_paths() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("namix-watch-{nonce}"));
+        let app = root.join("app");
+        fs::create_dir_all(app.join("src/controllers")).expect("controllers");
+        fs::write(app.join("src/main.rs"), "fn main() {}\n").expect("main");
+        fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname='app'\nversion='0.1.0'\n",
+        )
+        .expect("manifest");
+
+        let paths = existing_watch_paths(&app, &root);
+        assert!(paths.contains(&app.join("src/controllers")));
+        assert!(!paths.contains(&app.join("src/services")));
+        assert!(paths.iter().all(|path| path.exists()));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

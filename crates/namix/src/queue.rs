@@ -4,13 +4,28 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{Result as AnyResult, anyhow};
+use anyhow::Result as AnyResult;
+use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 
 /// Jobs are infrastructure boundaries: arbitrary driver failures retain their
 /// error chain and optional `anyhow::Context` until the worker records them.
 pub type JobResult = AnyResult<()>;
 pub type JobFuture = Pin<Box<dyn Future<Output = JobResult> + Send>>;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum QueueError {
+    #[error("queue is closed")]
+    Closed,
+}
+
+pub type QueueResult<T> = Result<T, QueueError>;
+
+impl From<QueueError> for crate::AppError {
+    fn from(error: QueueError) -> Self {
+        Self::internal(error)
+    }
+}
 
 pub trait Job: Send + 'static {
     fn name(&self) -> &'static str;
@@ -32,17 +47,24 @@ impl Queue {
         }
     }
 
-    pub async fn dispatch(&self, job: impl Job) -> JobResult {
+    pub async fn dispatch(&self, job: impl Job) -> QueueResult<()> {
         self.tx
             .send(Box::new(job))
             .await
-            .map_err(|_| anyhow!("queue is closed"))
+            .map_err(|_| QueueError::Closed)
     }
 
     pub async fn work_once(&self) -> Option<(&'static str, JobResult)> {
         let job = self.rx.lock().await.recv().await?;
         let name = job.name();
         Some((name, job.handle().await))
+    }
+
+    /// Stop accepting jobs. Already-buffered jobs remain available to the
+    /// worker, which makes shutdown deterministic instead of dropping work at
+    /// an arbitrary point.
+    pub async fn close(&self) {
+        self.rx.lock().await.close();
     }
 
     pub fn worker(self) -> tokio::task::JoinHandle<()> {
@@ -102,5 +124,13 @@ mod tests {
         queue.dispatch(Fails).await.unwrap();
         let (_, error) = queue.work_once().await.unwrap();
         assert!(format!("{:#}", error.unwrap_err()).contains("welcome mail: smtp unavailable"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_reports_a_closed_queue() {
+        let queue = Queue::memory(1);
+        queue.close().await;
+        let error = queue.dispatch(Fails).await.unwrap_err();
+        assert_eq!(error, QueueError::Closed);
     }
 }

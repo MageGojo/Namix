@@ -30,6 +30,7 @@ pub fn model(
     let (pascal, snake) = normalize_type_name(name)?;
     let dir = project.models_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    ensure_named_feature_marker(&dir, "models")?;
     let path = dir.join(format!("{snake}.rs"));
     if path.exists() {
         return Err(format!("已存在: {}", path.display()));
@@ -55,6 +56,8 @@ pub struct {pascal} {{
     println!("✓ model     {}", path.display());
     println!("  scope     {}", scope_hint(project, &Scope::Common));
     println!("  registry  已注册 {pascal}");
+    println!("  配置      namix.toml [features].models = true");
+    println!("            [database] enabled = true + Cargo namix feature（sqlite/…）");
 
     if with_migration {
         println!();
@@ -77,7 +80,7 @@ pub fn validator(project: &Project, name: &str, app: Option<&str>) -> Result<(),
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     if matches!(scope, Scope::Common) {
-        ensure_feature_marker(&dir)?;
+        ensure_named_feature_marker(&dir, "validators")?;
     }
 
     let path = dir.join(format!("{snake}.rs"));
@@ -122,6 +125,7 @@ pub fn validate(req: &Request) -> Result<Validated, ValidationError> {{
         "  用法      {}::validate(&req)",
         validator_mod_path(project, &scope, &snake)
     );
+    println!("  配置      namix.toml [features].validators = true");
     if matches!(scope, Scope::App(_)) {
         println!("  提示      cargo check 后 namix-build 会挂上该端 validators 模块");
     }
@@ -195,12 +199,12 @@ fn controller_mod_path(project: &Project, scope: &Scope, snake: &str) -> String 
     }
 }
 
-fn ensure_feature_marker(dir: &Path) -> Result<(), String> {
+fn ensure_named_feature_marker(dir: &Path, feature: &str) -> Result<(), String> {
     let marker = dir.join(".namix-feature");
     if !marker.exists() {
         fs::write(
             &marker,
-            "feature = \"validators\"\n# managed by namix-build — do not remove\n",
+            format!("feature = \"{feature}\"\n# managed by namix-build — do not remove\n"),
         )
         .map_err(|e| e.to_string())?;
     }
@@ -280,6 +284,11 @@ pub fn resource(project: &Project, name: &str, app: Option<&str>) -> Result<(), 
     let (pascal, snake) = normalize_type_name(name)?;
     let dir = controllers_dir(project, &scope)?;
     let path = dir.join(format!("{}_controller.rs", snake));
+    let body = resource_source(&pascal, &snake);
+    write_generated(&path, &body, "resource")
+}
+
+fn resource_source(pascal: &str, snake: &str) -> String {
     let body = format!(
         r#"use namix::prelude::*;
 
@@ -287,14 +296,21 @@ pub fn resource(project: &Project, name: &str, app: Option<&str>) -> Result<(), 
 pub struct {pascal}Controller;
 
 impl ResourceController for {pascal}Controller {{
-    fn index(&self, _req: Request) -> ResourceFuture {{ Box::pin(async {{ text("{snake}.index") }}) }}
-    fn show(&self, req: Request) -> ResourceFuture {{ Box::pin(async move {{ text(format!("{snake}.show:{{}}", req.param_or("id", ""))) }}) }}
+    fn index(&self, _req: Request) -> ResourceFuture<'_> {{
+        Box::pin(async move {{ Ok(text("{snake}.index")) }})
+    }}
+
+    fn show(&self, req: Request) -> ResourceFuture<'_> {{
+        Box::pin(async move {{
+            Ok(text(format!("{snake}.show:{{}}", req.param_or("id", ""))))
+        }})
+    }}
 }}
 
 // routes! 之外可直接：router.merge(resource("{snake}", {pascal}Controller))
 "#
     );
-    write_generated(&path, &body, "resource")
+    body
 }
 
 pub fn policy(project: &Project, name: &str) -> Result<(), String> {
@@ -338,7 +354,7 @@ pub fn mail(project: &Project, name: &str) -> Result<(), String> {
     let body = format!(
         r#"use namix::prelude::*;
 
-pub fn {snake}(to: &str) -> MailMessage {{ MailMessage::new(to, "{pascal}").text("TODO") }}
+pub fn {snake}(to: &str) -> MailMessage {{ MailMessage::new(to, "{pascal}").text("{pascal} body") }}
 "#
     );
     write_generated(&path, &body, "mail")
@@ -354,7 +370,7 @@ pub fn notification(project: &Project, name: &str) -> Result<(), String> {
         r#"use namix::prelude::*;
 
 pub fn {snake}(recipient: &str) -> Notification {{
-    Notification::new(NotificationChannel::Database, recipient, "{pascal}", "TODO")
+    Notification::new(NotificationChannel::Database, recipient, "{pascal}", "{pascal} body")
 }}
 "#
     );
@@ -385,4 +401,19 @@ fn write_generated(path: &Path, body: &str, kind: &str) -> Result<(), String> {
     write_new(path, body)?;
     println!("✓ {kind:<9} {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_template_uses_fallible_borrowing_futures() {
+        let source = resource_source("Post", "post");
+
+        assert!(source.contains("-> ResourceFuture<'_>"));
+        assert!(source.contains("Box::pin(async move { Ok(text(\"post.index\")) })"));
+        assert!(source.contains("Ok(text(format!(\"post.show:{}\""));
+        assert!(!source.contains("-> ResourceFuture {"));
+    }
 }

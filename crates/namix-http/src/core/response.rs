@@ -133,6 +133,22 @@ impl Response {
         self
     }
 
+    /// Internal response marker used by protocol adapters while a response is
+    /// flowing through ordinary application middleware.
+    pub(crate) fn insert_extension<T>(&mut self, value: T)
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.inner.extensions_mut().insert(value);
+    }
+
+    pub(crate) fn extension<T>(&self) -> Option<&T>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.inner.extensions().get::<T>()
+    }
+
     pub fn remove_header(&mut self, name: &str) -> &mut Self {
         self.inner.headers_mut().remove(name);
         self
@@ -212,7 +228,10 @@ impl Response {
 
     /// 附带 success flash（下一请求 `req.flash().success`）。
     pub fn with_flash_ok(self) -> Self {
-        self.with_cookie(crate::core::controller::FLASH_COOKIE, "ok")
+        self.with_cookie(
+            crate::core::controller::FLASH_COOKIE,
+            &crate::core::controller::flash_cookie_ok(),
+        )
     }
 
     /// 消费 flash cookie（页面读完后清掉）。

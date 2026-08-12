@@ -68,6 +68,33 @@ pub async fn login(req: Request) -> Response {
 #[derive(Debug, Serialize)]
 pub struct AuthOk {
     pub redirect: String,
+    /// HS256 JWT for `Authorization: Bearer` (API / mobile). Browser SPA keeps the Cookie.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in: Option<u64>,
+}
+
+impl AuthOk {
+    fn with_tokens(redirect: impl Into<String>, tokens: &crate::services::session::IssuedTokens) -> Self {
+        Self {
+            redirect: redirect.into(),
+            access_token: Some(tokens.access_token.clone()),
+            token_type: Some("Bearer"),
+            expires_in: Some(tokens.expires_in),
+        }
+    }
+
+    fn redirect_only(redirect: impl Into<String>) -> Self {
+        Self {
+            redirect: redirect.into(),
+            access_token: None,
+            token_type: None,
+            expires_in: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -85,7 +112,7 @@ pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, AppError>
         .await?;
 
     let sessions = SessionService::new();
-    let session_id = sessions.rotate(session_id_from(&req).as_deref(), &user);
+    let tokens = sessions.rotate_pair(session_id_from(&req).as_deref(), &user)?;
 
     let outcome = dispatch(UserRegistered {
         user_id: user.id,
@@ -93,17 +120,19 @@ pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, AppError>
     });
     log_outcome("register", &outcome);
 
-    Ok(ActionOk::new(AuthOk {
-        redirect: "/me".into(),
-    })
-    .with_cookie_options(SESSION_COOKIE, session_id, SessionService::cookie_options())
-    .with_clear_cookie(LEGACY_SESSION_COOKIE))
+    Ok(ActionOk::new(AuthOk::with_tokens("/me", &tokens))
+        .with_cookie_options(
+            SESSION_COOKIE,
+            tokens.cookie_token,
+            SessionService::cookie_options(),
+        )
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
 }
 
 /// TSX: `import { login } from '../generated/actions/login'`
 /// 规则见 `validators/login_form.rs`
 #[server(name = "login", seal = ["password"])]
-pub async fn login_action(req: Request) -> Result<ActionOk<AuthOk>, ActionError> {
+pub async fn login_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
     let form = LoginRequest::from_values(&req)?;
 
     let users = UserService::new();
@@ -112,34 +141,44 @@ pub async fn login_action(req: Request) -> Result<ActionOk<AuthOk>, ActionError>
         .await
     else {
         // 字段级错误：前端可 mapErrors 成中文，或直接展示
-        return Err(ActionError::field(
+        return Err(AppError::validation(
             "password",
             "invalid username or password",
         ));
     };
 
-    let _ = users.record_login(user.id, "127.0.0.1").await;
+    let client_ip = req
+        .client_ip()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    if let Err(error) = users.record_login(user.id, &client_ip).await {
+        namix::log::warn!("record login failed: {error}");
+    }
     let sessions = SessionService::new();
-    let session_id = sessions.rotate(session_id_from(&req).as_deref(), &user);
+    let tokens = sessions.rotate_pair(session_id_from(&req).as_deref(), &user)?;
 
     let outcome = dispatch(UserLoggedIn {
         user_id: user.id,
         username: user.username.clone(),
-        ip: "127.0.0.1".into(),
+        ip: client_ip,
     });
     log_outcome("login", &outcome);
 
-    Ok(ActionOk::new(AuthOk {
-        redirect: form.redirect,
-    })
-    .with_cookie_options(SESSION_COOKIE, session_id, SessionService::cookie_options())
-    .with_clear_cookie(LEGACY_SESSION_COOKIE))
+    Ok(ActionOk::new(AuthOk::with_tokens(form.redirect, &tokens))
+        .with_cookie_options(
+            SESSION_COOKIE,
+            tokens.cookie_token,
+            SessionService::cookie_options(),
+        )
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
 }
 
-/// SSR 顶栏无 hydrate 时用：`GET /logout`
+/// 经典表单退出；POST 会经过 Origin + CSRF 校验。
 pub async fn logout_page(req: Request) -> Response {
     if let Some(sid) = session_id_from(&req) {
-        SessionService::new().revoke(&sid);
+        if let Err(error) = SessionService::new().revoke(&sid) {
+            return error.into_response_for(&req);
+        }
     }
     Response::redirect_see_other("/")
         .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
@@ -148,16 +187,14 @@ pub async fn logout_page(req: Request) -> Response {
 
 /// TSX：`import { logout } from '../generated/actions/logout'`
 #[server(name = "logout")]
-pub async fn logout_action(req: Request) -> Result<ActionOk<AuthOk>, ActionError> {
+pub async fn logout_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
     if let Some(sid) = session_id_from(&req) {
-        SessionService::new().revoke(&sid);
+        SessionService::new().revoke(&sid)?;
     }
 
-    Ok(ActionOk::new(AuthOk {
-        redirect: "/".into(),
-    })
-    .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
-    .with_clear_cookie(LEGACY_SESSION_COOKIE))
+    Ok(ActionOk::new(AuthOk::redirect_only("/"))
+        .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
 }
 
 /// 用户主动结束所有设备会话（当前设备也会被清除）。
@@ -166,12 +203,10 @@ pub async fn logout_all_action(req: Request) -> Result<ActionOk<AuthOk>, AppErro
     let user = req
         .get::<crate::services::session::LoginUser>()
         .ok_or(AppError::Unauthenticated)?;
-    SessionService::new().revoke_all_for_user(user.id);
-    Ok(ActionOk::new(AuthOk {
-        redirect: "/".into(),
-    })
-    .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
-    .with_clear_cookie(LEGACY_SESSION_COOKIE))
+    SessionService::new().revoke_all_for_user(user.id)?;
+    Ok(ActionOk::new(AuthOk::redirect_only("/"))
+        .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
 }
 
 /// Request a one-time reset token. The response remains identical for missing
@@ -231,13 +266,11 @@ pub async fn password_reset_confirm_action(req: Request) -> Result<ActionOk<Auth
         .reset_password(user_id, password)
         .await
         ?;
-    SessionService::new().revoke_all_for_user(user_id);
+    SessionService::new().revoke_all_for_user(user_id)?;
 
-    Ok(ActionOk::new(AuthOk {
-        redirect: "/login".into(),
-    })
-    .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
-    .with_clear_cookie(LEGACY_SESSION_COOKIE))
+    Ok(ActionOk::new(AuthOk::redirect_only("/login"))
+        .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
+        .with_clear_cookie(LEGACY_SESSION_COOKIE))
 }
 
 fn log_outcome(kind: &str, outcome: &Outcome) {

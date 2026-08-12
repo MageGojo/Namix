@@ -13,7 +13,7 @@ mod scope;
 mod template;
 mod ui;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -30,13 +30,14 @@ use crate::ui::{HomeAction, WizardPreset, run_home, run_new_wizard};
     version,
     propagate_version = true,
     after_help = "提示:\n  \
-nx new demo --single --tsx --tailwind --git\n  \
-nx make model Article -m\n  \
+nx new demo --single --tsx --tailwind --git   # lean：controllers+routes+views\n  \
+# 打开 DB/Model：namix.toml [database]/features] + Cargo features，见 docs/FEATURES.md\n  \
+nx make controller Home\n  \
+nx make model Article -m                     # 需先 models=true + database.enabled\n  \
 nx make validator Login\n  \
-nx make validator Checkout --app user   # 多应用：端专属\n  \
-nx make controller Home --app user\n  \
-nx migrate generate|apply|snapshot|reset\n  \
-nx seed\n  \
+nx make validator Checkout --app user        # 多应用：端专属\n  \
+nx migrate generate|apply|snapshot|reset     # 需 toasty bin + DB\n  \
+nx seed                                      # 需 seeders=true + seed bin\n  \
 nx export routes\n  \
 nx dev                   # 同时启动 Rust + Vite(React)\n  \
 nx build                 # 前后端发布包 → dist/<version>/\n  \
@@ -648,6 +649,43 @@ struct NewOpts {
     path: Option<PathBuf>,
 }
 
+fn direct_new_config(
+    opts: &NewOpts,
+    interactive_terminal: bool,
+) -> Option<(String, PathBuf, ScaffoldConfig)> {
+    let name = opts.name.as_ref()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let explicit_mode = if opts.multi {
+        Some(Mode::Multi)
+    } else if opts.single {
+        Some(Mode::Single)
+    } else {
+        None
+    };
+    let all_required_choices_are_explicit = explicit_mode.is_some() && opts.https.is_some();
+
+    // A redirected stdin/stdout cannot run Bubble Tea.  In that case `nx new NAME`
+    // is deliberately deterministic so CI, shell scripts, and IDE tasks work
+    // without spelling every wizard answer.
+    if interactive_terminal && !all_required_choices_are_explicit {
+        return None;
+    }
+
+    let config = ScaffoldConfig {
+        mode: explicit_mode.unwrap_or(Mode::Single),
+        https: opts.https.unwrap_or(false),
+        database: opts.database.unwrap_or(DatabaseDriver::Sqlite),
+        frontend: opts.frontend.unwrap_or(FrontendLang::Tsx),
+        tailwind: opts.tailwind.unwrap_or(true),
+        git: opts.git.unwrap_or(true),
+    };
+    let path = opts.path.clone().unwrap_or_else(|| PathBuf::from(name));
+    Some((name.to_string(), path, config))
+}
+
 fn parse_db_driver(s: &str) -> Result<DatabaseDriver, String> {
     match s.trim().to_ascii_lowercase().as_str() {
         "sqlite" | "sqlite3" => Ok(DatabaseDriver::Sqlite),
@@ -669,24 +707,11 @@ async fn run_new(opts: NewOpts) -> ExitCode {
         None
     };
 
-    // name+mode+https 齐备：无 TTY 也可直接创建（默认 sqlite / tsx / tailwind / git）
-    if let (Some(name), Some(mode), Some(https)) = (&opts.name, mode, opts.https) {
-        let database = opts.database.unwrap_or(DatabaseDriver::Sqlite);
-        let frontend = opts.frontend.unwrap_or(FrontendLang::Tsx);
-        let tailwind = opts.tailwind.unwrap_or(true);
-        let git = opts.git.unwrap_or(true);
-        let path = opts.path.clone().unwrap_or_else(|| PathBuf::from(name));
-        let cfg = ScaffoldConfig {
-            mode,
-            https,
-            database,
-            frontend,
-            tailwind,
-            git,
-        };
-        return match template::scaffold(&path, name, &cfg) {
+    let interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if let Some((name, path, cfg)) = direct_new_config(&opts, interactive_terminal) {
+        return match template::scaffold(&path, &name, &cfg) {
             Ok(()) => {
-                print_new_success(name, &path, &cfg);
+                print_new_success(&name, &path, &cfg);
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -744,30 +769,75 @@ fn print_new_success(name: &str, path: &Path, cfg: &ScaffoldConfig) {
     println!();
     println!("✓ {name} 已创建 → {}", path.display());
     println!(
-        "  https={}  database={}  frontend={}  tailwind={}  git={}",
-        if cfg.https { "on" } else { "off" },
+        "  lean 默认 = controllers + routes + views · database={}（enabled=false）",
         cfg.database.label(),
+    );
+    println!(
+        "  https={}  frontend={}  tailwind={}  git={}",
+        if cfg.https { "on" } else { "off" },
         cfg.frontend.label(),
         if cfg.tailwind { "on" } else { "off" },
         if cfg.git { "on" } else { "off" },
     );
     println!("  cd {}", path.display());
+    println!("  nx doctor");
+    println!("  cd app && npm i && npm run build   # 全栈 views 在 app/src/views");
     match cfg.mode {
         Mode::Multi => {
-            println!("  cargo run -p app --bin www -- -p 3000 -h");
+            println!("  cargo run -p app --bin www -- -p 3000");
             println!("  cargo run -p app --bin user");
             println!("  cargo run -p app --bin admin");
         }
         Mode::Single => {
-            println!("  nx doctor");
-            println!("  nx seed");
-            println!("  cargo run -p app -- -p 3000 -h");
+            println!("  cargo run -p app -- -p 3000");
         }
     }
-    println!("  cd frontend && npm i && npm run dev");
     if !cfg.https {
         println!("  需要 HTTPS 时追加 --https");
     }
-    println!("  生成: nx make model Foo -m · nx make validator Login");
-    println!("  迁移: nx migrate generate|apply · 路由: nx export routes");
+    println!("  打开 DB/Model/校验：docs/FEATURES.md · namix.toml [features] + Cargo features");
+    println!("  生成骨架: nx make controller Home · nx make validator Login（先开 validators）");
+    println!("  路由导出: nx export routes → app/src/views/routes.ts");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_opts() -> NewOpts {
+        NewOpts {
+            name: Some("demo".into()),
+            multi: false,
+            single: false,
+            https: None,
+            database: None,
+            frontend: None,
+            tailwind: None,
+            git: None,
+            path: None,
+        }
+    }
+
+    #[test]
+    fn non_interactive_new_has_deterministic_defaults() {
+        let (name, path, config) = direct_new_config(&new_opts(), false).expect("direct config");
+        assert_eq!(name, "demo");
+        assert_eq!(path, PathBuf::from("demo"));
+        assert_eq!(config.mode, Mode::Single);
+        assert!(!config.https);
+        assert_eq!(config.database, DatabaseDriver::Sqlite);
+        assert_eq!(config.frontend, FrontendLang::Tsx);
+        assert!(config.tailwind);
+        assert!(config.git);
+    }
+
+    #[test]
+    fn interactive_new_keeps_wizard_until_core_choices_are_explicit() {
+        let mut opts = new_opts();
+        assert!(direct_new_config(&opts, true).is_none());
+
+        opts.single = true;
+        opts.https = Some(false);
+        assert!(direct_new_config(&opts, true).is_some());
+    }
 }

@@ -8,9 +8,10 @@
 - 限流：提供 IP / 已认证用户策略，Action 预设 login、registration、action 三档，上传单独限流。
 - 错误边界：`AppError` 映射 HTML、JSON、Action，并保留 `Retry-After`。
 - 配置启动校验：生产 HTTPS、会话密钥、Action seal、迁移策略和数据库配置必须一致。
-- 会话：CSPRNG 签名 token、过期、轮换、全设备登出、一次性密码重置、旧 SHA-256 登录后升级 Argon2id。
+- 会话：Cookie opaque（CSPRNG id + HMAC）与可选 HS256 JWT Bearer（claims 含 `sid`）；`[session] lifetime_secs` / `jwt_lifetime_secs`；`SessionStore`（memory / file / redis）；登录轮换、全设备登出、一次性密码重置、旧 SHA-256 登录后升级 Argon2id。
 
-后续增强：可信代理 CIDR 解析、Redis 限流/会话驱动、上传 body 与磁盘配额、跨进程密码重置 token。
+后续增强：真实 Redis 限流/会话客户端、上传 body 与磁盘配额、跨进程密码重置 token。  
+（`TrustedProxies` + `[security].trusted_proxies` CIDR/`X-Forwarded-For` 解析已提供第一版。）
 
 ## P1：Laravel 式开发体验（框架 API 第一版已完成）
 
@@ -33,10 +34,10 @@
 
 ## P3：生产运行闭环
 
-已完成：不可变版本目录、共享数据面、候选 PID 就绪验证、原子 current 切换、优雅排水、稳定生产配置及本地到服务器上传脚本。
+已完成：不可变版本目录、共享数据面、候选 PID 就绪验证、原子 current 切换、优雅排水、稳定生产配置及本地到服务器上传脚本；框架 `SessionStore`（memory / file / Redis 适配）、可配置会话/JWT 时长、`namix::Jwt` 与滚动更新前的共享会话预检。
 
 下一项：
 
-1. Redis/数据库 Session Store，并在滚动更新前强制检查共享会话配置。
-2. Redis 限流、真实 S3/邮件/通知驱动和可观测性 exporter。
+1. 真实 Redis 客户端集成（限流 + 会话）、数据库 Session Store，以及跨进程密码重置 token。
+2. 真实 S3/邮件/通知驱动和可观测性 exporter。
 3. 守护进程/容器编排适配、迁移 preflight、发布保留策略和 CI 远程部署凭据集成。

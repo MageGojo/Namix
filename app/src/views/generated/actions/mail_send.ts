@@ -2,6 +2,6 @@
 import { callRust } from '../callRust'
 
 /** action `mail_send` → token `f3a59323`（路径已混淆） */
-export function mail_send(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+export function mail_send(input?: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return callRust('f3a59323', input)
 }

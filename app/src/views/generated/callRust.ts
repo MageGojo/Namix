@@ -19,7 +19,7 @@ async function loadSeal(): Promise<SealMod> {
 	if (!_seal) {
 		_seal = (async () => {
 			const mod = (await import('./seal/namix_seal.js')) as SealMod
-			// Vite base=/build/ → wasmUrl 为 /build/assets/….wasm（与 Namix 静态路由一致）
+			// Vite base 与 NAMIX_ASSET_PREFIX/BASE 对齐 → wasmUrl 与 HTML/静态路由一致
 			await mod.default({ module_or_path: wasmUrl })
 			return mod
 		})()

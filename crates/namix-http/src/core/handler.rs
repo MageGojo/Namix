@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::extract::FromRequest;
 use super::middleware::BoxFuture;
 use super::request::Request;
-use super::response::{IntoResponse, Respond, Response};
+use super::response::{Respond, Response};
 use super::routing::HandlerFn;
 
 pub trait Handler<T>: Clone + Send + Sync + 'static {
@@ -32,11 +32,11 @@ impl<F, Fut, R> Handler<NoEx> for F
 where
     F: Fn() -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse,
+    R: Respond,
 {
-    fn call(&self, _req: Request) -> BoxFuture<Response> {
+    fn call(&self, req: Request) -> BoxFuture<Response> {
         let fut = (self)();
-        Box::pin(async move { fut.await.into_response() })
+        Box::pin(async move { fut.await.respond(&req) })
     }
 }
 
@@ -114,3 +114,36 @@ where
 
 /// 用于在泛型位置帮助推断提取器元组（宏内部用）。
 pub struct HandlerMarker<T>(PhantomData<T>);
+
+#[cfg(test)]
+mod tests {
+    use http::StatusCode;
+
+    use super::*;
+    use crate::core::controller::text;
+    use crate::core::error::AppError;
+    use crate::core::routing::Route;
+    use crate::core::test_client::TestClient;
+
+    #[tokio::test]
+    async fn no_extractor_handler_uses_the_respond_error_boundary() {
+        async fn handler() -> Result<Response, AppError> {
+            Err(AppError::NotFound)
+        }
+
+        let mut client = TestClient::new(Route::get("/missing", handler).register());
+        let response = client.get("/missing").await;
+
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn no_extractor_handler_still_accepts_plain_responses() {
+        async fn handler() -> Response {
+            text("ok")
+        }
+
+        let mut client = TestClient::new(Route::get("/", handler).register());
+        assert_eq!(client.get("/").await.text(), "ok");
+    }
+}

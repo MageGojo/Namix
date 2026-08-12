@@ -1,15 +1,16 @@
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use http::Method;
 
+use crate::core::content_type::ContentType;
 use crate::core::controller;
 use crate::core::handler::Handler;
 use crate::core::middleware::{BoxFuture, MiddlewareFn, Next, wrap_middleware};
 use crate::core::request::Request;
 use crate::core::response::Response;
 
-use crate::core::ws::WsRouteEntry;
+use crate::core::ws::{WsHandlerFn, WsRouteEntry};
 
 use super::HandlerFn;
 use super::catalog::RouteCatalog;
@@ -17,6 +18,18 @@ use super::path::PathPattern;
 use super::route::Route;
 
 type WsMatch = (Arc<WsRouteEntry>, Vec<(String, String)>);
+
+pub(crate) enum WsHandshakeOutcome {
+    Accepted {
+        request: Request,
+        handler: WsHandlerFn,
+        middleware_response: Response,
+    },
+    Rejected(Response),
+}
+
+#[derive(Clone)]
+struct WsMiddlewarePassed;
 
 pub(crate) struct RouteEntry {
     pub method: Method,
@@ -100,9 +113,12 @@ impl Router {
         }
         for entry in other.ws_routes {
             let path = PathPattern::join(prefix, &entry.pattern.raw);
+            let mut middlewares = group_middlewares.clone();
+            middlewares.extend(entry.middlewares.iter().cloned());
             self.ws_routes.push(Arc::new(WsRouteEntry {
                 pattern: PathPattern::parse(&path),
                 handler: Arc::clone(&entry.handler),
+                middlewares,
                 name: entry.name.clone(),
             }));
         }
@@ -188,6 +204,71 @@ impl Router {
         })
     }
 
+    /// Run a WebSocket HTTP handshake through the same global and route
+    /// middleware model as regular routes. The terminal handler captures the
+    /// fully mutated request and marks its response with a private extension;
+    /// a short-circuit can therefore never be confused with permission to
+    /// upgrade merely by returning status 101.
+    pub(crate) async fn dispatch_ws_handshake(
+        &self,
+        mut req: Request,
+        global_middlewares: Arc<Vec<MiddlewareFn>>,
+    ) -> WsHandshakeOutcome {
+        let Some((route, params)) = self.match_ws(req.path()) else {
+            let handler: HandlerFn = Arc::new(|_req| {
+                Box::pin(async {
+                    crate::core::ws::reject(
+                        http::StatusCode::NOT_FOUND,
+                        "websocket route not found",
+                    )
+                }) as BoxFuture<Response>
+            });
+            let response = Next::new(global_middlewares, 0, handler).run(req).await;
+            return WsHandshakeOutcome::Rejected(sanitize_ws_rejection(response));
+        };
+
+        req.set_params(params);
+        let mut chain = Vec::with_capacity(global_middlewares.len() + route.middlewares.len());
+        chain.extend(global_middlewares.iter().cloned());
+        chain.extend(route.middlewares.iter().cloned());
+
+        let captured = Arc::new(Mutex::new(None));
+        let terminal_capture = Arc::clone(&captured);
+        let terminal: HandlerFn = Arc::new(move |request| {
+            let terminal_capture = Arc::clone(&terminal_capture);
+            Box::pin(async move {
+                let mut response = Response::new(
+                    http::StatusCode::SWITCHING_PROTOCOLS,
+                    ContentType::Text,
+                    bytes::Bytes::new(),
+                );
+                if let Ok(mut slot) = terminal_capture.lock() {
+                    *slot = Some(request);
+                    response.insert_extension(WsMiddlewarePassed);
+                }
+                response
+            })
+        });
+
+        let response = Next::new(Arc::new(chain), 0, terminal).run(req).await;
+        let passed = response.status() == http::StatusCode::SWITCHING_PROTOCOLS
+            && response.extension::<WsMiddlewarePassed>().is_some();
+        let request = if passed {
+            captured.lock().ok().and_then(|mut slot| slot.take())
+        } else {
+            None
+        };
+
+        match request {
+            Some(request) => WsHandshakeOutcome::Accepted {
+                request,
+                handler: Arc::clone(&route.handler),
+                middleware_response: response,
+            },
+            None => WsHandshakeOutcome::Rejected(sanitize_ws_rejection(response)),
+        }
+    }
+
     fn push_middleware_fn(&mut self, mw: MiddlewareFn) {
         for entry in &mut self.routes {
             let mut next = Vec::with_capacity(entry.middlewares.len() + 1);
@@ -195,6 +276,17 @@ impl Router {
             next.extend(entry.middlewares.iter().cloned());
             *entry = Arc::new(RouteEntry {
                 method: entry.method.clone(),
+                pattern: entry.pattern.clone(),
+                handler: Arc::clone(&entry.handler),
+                middlewares: next,
+                name: entry.name.clone(),
+            });
+        }
+        for entry in &mut self.ws_routes {
+            let mut next = Vec::with_capacity(entry.middlewares.len() + 1);
+            next.push(Arc::clone(&mw));
+            next.extend(entry.middlewares.iter().cloned());
+            *entry = Arc::new(WsRouteEntry {
                 pattern: entry.pattern.clone(),
                 handler: Arc::clone(&entry.handler),
                 middlewares: next,
@@ -258,13 +350,22 @@ impl Router {
     }
 }
 
+fn sanitize_ws_rejection(mut response: Response) -> Response {
+    if response.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+        response.set_status(http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::controller::text;
-    use crate::core::middleware::Next;
+    use crate::core::middleware::{Next, wrap_middleware};
+    use crate::core::proxy::TrustedProxies;
     use crate::core::request::Request;
     use crate::core::response::Response;
+    use crate::core::ws::{WsSocket, switching_protocols_with_headers};
     use http::{Method, Request as HttpRequest};
 
     async fn ok(_req: Request) -> Response {
@@ -280,6 +381,48 @@ mod tests {
         next.run(req).await.with_header("x-m", "yes")
     }
 
+    async fn ws_handler(_req: Request, _socket: WsSocket) {}
+
+    async fn global_block(_req: Request, _next: Next) -> Response {
+        Response::new(
+            http::StatusCode::UNAUTHORIZED,
+            ContentType::Text,
+            "global blocked",
+        )
+        .with_header("x-blocked-by", "global")
+    }
+
+    async fn route_block(_req: Request, _next: Next) -> Response {
+        Response::new(
+            http::StatusCode::FORBIDDEN,
+            ContentType::Text,
+            "route blocked",
+        )
+        .with_header("x-blocked-by", "route")
+    }
+
+    async fn request_id(mut req: Request, next: Next) -> Response {
+        req.set_attr("test.request_id", "req-42");
+        next.run(req).await.with_header("x-request-id", "req-42")
+    }
+
+    async fn mark_ws_route(mut req: Request, next: Next) -> Response {
+        let inherited = req.attr_or("test.request_id", "missing").to_string();
+        req.set_attr("test.route_saw", inherited);
+        next.run(req)
+            .await
+            .with_header("strict-transport-security", "max-age=31536000")
+    }
+
+    async fn forge_upgrade_after_next(req: Request, next: Next) -> Response {
+        let _ = next.run(req).await;
+        Response::new(
+            http::StatusCode::SWITCHING_PROTOCOLS,
+            ContentType::Text,
+            "forged",
+        )
+    }
+
     fn req(path: &str) -> Request {
         let http_req: HttpRequest<()> = HttpRequest::builder()
             .method(Method::GET)
@@ -288,6 +431,18 @@ mod tests {
             .unwrap();
         let (parts, _) = http_req.into_parts();
         Request::new(parts.method, parts.uri, parts.headers, bytes::Bytes::new())
+    }
+
+    fn ws_req(path: &str) -> Request {
+        let mut request = req(path);
+        request.set_header("host", "app.test");
+        request.set_header("origin", "https://app.test");
+        request.set_header("connection", "Upgrade");
+        request.set_header("upgrade", "websocket");
+        request.set_header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+        request.set_header("x-forwarded-for", "198.51.100.20");
+        request.set_client_ip("127.0.0.1".parse().unwrap());
+        request
     }
 
     #[tokio::test]
@@ -315,5 +470,118 @@ mod tests {
         assert_eq!(resp.header("x-m"), Some("yes"));
         let (_s, _h, body) = resp.into_status_headers_body().await;
         assert_eq!(&body[..], b"a=1");
+    }
+
+    #[tokio::test]
+    async fn websocket_global_and_route_middleware_short_circuit_unchanged() {
+        let router = Route::ws("/ws", ws_handler).register();
+        let outcome = router
+            .dispatch_ws_handshake(
+                ws_req("/ws"),
+                Arc::new(vec![wrap_middleware(global_block)]),
+            )
+            .await;
+        let WsHandshakeOutcome::Rejected(response) = outcome else {
+            panic!("global middleware unexpectedly allowed upgrade");
+        };
+        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+        assert_eq!(response.header("x-blocked-by"), Some("global"));
+        assert_eq!(response.into_status_headers_body().await.2, "global blocked");
+
+        let router = Route::ws("/ws", ws_handler)
+            .middleware(route_block)
+            .register();
+        let outcome = router
+            .dispatch_ws_handshake(ws_req("/ws"), Arc::new(Vec::new()))
+            .await;
+        let WsHandshakeOutcome::Rejected(response) = outcome else {
+            panic!("route middleware unexpectedly allowed upgrade");
+        };
+        assert_eq!(response.status(), http::StatusCode::FORBIDDEN);
+        assert_eq!(response.header("x-blocked-by"), Some("route"));
+        assert_eq!(response.into_status_headers_body().await.2, "route blocked");
+    }
+
+    #[tokio::test]
+    async fn websocket_middleware_mutations_and_security_headers_reach_upgrade() {
+        let router = Route::ws("/ws/:room", ws_handler)
+            .middleware(mark_ws_route)
+            .register();
+        let globals = vec![
+            TrustedProxies::new(["127.0.0.1"])
+                .unwrap()
+                .middleware(),
+            wrap_middleware(request_id),
+        ];
+
+        let outcome = router
+            .dispatch_ws_handshake(ws_req("/ws/general"), Arc::new(globals))
+            .await;
+        let WsHandshakeOutcome::Accepted {
+            request,
+            middleware_response,
+            ..
+        } = outcome
+        else {
+            panic!("middleware unexpectedly rejected upgrade");
+        };
+
+        assert_eq!(request.param("room"), Some("general"));
+        assert_eq!(request.attr("test.request_id"), Some("req-42"));
+        assert_eq!(request.attr("test.route_saw"), Some("req-42"));
+        assert_eq!(
+            request.client_ip(),
+            Some("198.51.100.20".parse().unwrap())
+        );
+        assert_eq!(
+            middleware_response.header("x-request-id"),
+            Some("req-42")
+        );
+
+        let response = switching_protocols_with_headers(
+            "dGhlIHNhbXBsZSBub25jZQ==",
+            middleware_response.headers(),
+        );
+        assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(response.headers()["x-request-id"], "req-42");
+        assert_eq!(
+            response.headers()["strict-transport-security"],
+            "max-age=31536000"
+        );
+        assert_eq!(
+            response.headers()["sec-websocket-accept"],
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+        assert!(response.headers().get("content-type").is_none());
+    }
+
+    #[tokio::test]
+    async fn websocket_requires_the_private_terminal_marker() {
+        let router = Route::ws("/ws", ws_handler)
+            .middleware(forge_upgrade_after_next)
+            .register();
+        let outcome = router
+            .dispatch_ws_handshake(ws_req("/ws"), Arc::new(Vec::new()))
+            .await;
+        let WsHandshakeOutcome::Rejected(response) = outcome else {
+            panic!("replacement response unexpectedly allowed upgrade");
+        };
+        assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn router_group_middleware_applies_to_websocket_routes() {
+        let router = Router::new().group("/api", |router| {
+            router
+                .merge(Route::ws("/events", ws_handler).register())
+                .middleware(route_block)
+        });
+        let outcome = router
+            .dispatch_ws_handshake(ws_req("/api/events"), Arc::new(Vec::new()))
+            .await;
+        let WsHandshakeOutcome::Rejected(response) = outcome else {
+            panic!("group middleware unexpectedly allowed upgrade");
+        };
+        assert_eq!(response.status(), http::StatusCode::FORBIDDEN);
     }
 }

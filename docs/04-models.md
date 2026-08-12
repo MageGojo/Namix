@@ -15,6 +15,7 @@
 2. **关联用属性宏**：`has_many` / `has_one` / `belongs_to` / M2M `via`。
 3. **全局 Db**：`namix::db::{run, optional, vec}` 包一层，助手方法里不传来传去 `Db`。
 4. **命名避开 Toasty 占用**：列表用 `User::list()`，不要指望 `User::all().await` 当「全部行」（`all()` 是查询构建器）。
+5. **授权用库里的行，不用前端的归属字段**：更新/删除前 `Model::find`，再 `authorize(actor, policy, …, Some(&model))`。见 [授权](./07-authorization.md)。
 
 ---
 
@@ -155,25 +156,26 @@ let profile = db_user.load_profile().await;
 ### 写（放 Service）
 
 ```rust
-// services/user.rs 思路
-pub async fn register(&self, username: &str, password: &str) -> Result<User, String> {
+// services/user.rs：业务错误用 AppError，不要再用 String
+pub async fn register(&self, username: &str, password: &str) -> Result<User, AppError> {
     if User::find_by_username(username).await.is_some() {
-        return Err("username already taken".into());
+        return Err(AppError::conflict("username already taken"));
     }
-    let password_hash = hash_password(password)?;
-    db::run(|mut db| async move {
+    let password_hash = Self::hash_password(password)?;
+    db::run(move |mut db| async move {
         toasty::create!(User {
-            username: username.to_string(),
-            password_hash,
-            name: username.to_string(),
+            username: username.as_str(),
+            password_hash: password_hash.as_str(),
+            name: username.as_str(),
             is_vip: false,
-            // …
+            email_verified_at: None,
         })
         .exec(&mut db)
         .await
+        // …
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(AppError::internal)
 }
 ```
 
@@ -182,6 +184,8 @@ pub async fn register(&self, username: &str, password: &str) -> Result<User, Str
 ```rust
 let user = UserService::new().register(&form.username, &form.password).await?;
 ```
+
+发帖写路径还会先 `authorize`（见 [授权](./07-authorization.md)），再调用 `create_post` / `update_post` / `delete_post`。
 
 ---
 

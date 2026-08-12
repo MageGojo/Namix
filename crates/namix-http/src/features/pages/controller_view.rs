@@ -75,6 +75,12 @@ impl<'a> ViewBag<'a> {
         self.mode(RenderMode::Ssr)
     }
 
+    /// Pure native SSR with a trusted HTML body.
+    pub fn ssr_html(mut self, body: impl Into<String>) -> Self {
+        self.view = self.view.server_html(body);
+        self
+    }
+
     pub fn spa(self) -> Self {
         self.mode(RenderMode::Spa)
     }

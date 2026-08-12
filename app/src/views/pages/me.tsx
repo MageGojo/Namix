@@ -1,7 +1,7 @@
 import { AppNav } from '../components/nav'
 import type { MePage } from '../generated/MePage'
 import { ProfileForm } from '../generated/fields'
-import { Head, router, usePage } from '../namix'
+import { CsrfField, Head, router, usePage } from '../namix'
 import { route } from '../routes'
 import type { PageProps } from '../types'
 
@@ -47,6 +47,7 @@ export default function Me({
         ) : null}
 
         <form method="post" action={route.me.submit()} className="mt-8 space-y-4">
+          <CsrfField />
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-zinc-700">显示名</span>
             <input

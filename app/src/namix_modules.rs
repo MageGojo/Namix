@@ -3,9 +3,10 @@
 pub mod controllers;
 pub mod middleware;
 pub mod routes;
-pub mod services;
 pub mod models;
+pub mod services;
+pub mod validators;
 pub mod events;
 pub mod listeners;
 pub mod seeders;
-pub mod validators;
+pub mod policies;

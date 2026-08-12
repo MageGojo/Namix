@@ -32,7 +32,7 @@ use thiserror::Error;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::{Message, Role};
 
-use crate::core::middleware::BoxFuture;
+use crate::core::middleware::{BoxFuture, MiddlewareFn};
 use crate::core::request::Request;
 use crate::core::response::{Body, Response, body_full};
 use crate::core::routing::path::PathPattern;
@@ -175,6 +175,7 @@ pub(crate) type WsHandlerFn =
 pub(crate) struct WsRouteEntry {
     pub pattern: PathPattern,
     pub handler: WsHandlerFn,
+    pub middlewares: Vec<MiddlewareFn>,
     pub name: Option<String>,
 }
 
@@ -239,6 +240,17 @@ pub fn accept_key(sec_websocket_key: &str) -> String {
 
 /// 构建 101 握手响应（body 为空）。
 pub fn switching_protocols(sec_websocket_key: &str) -> HyperResponse<Body> {
+    switching_protocols_with_headers(sec_websocket_key, &HeaderMap::new())
+}
+
+/// Build the protocol-owned `101` response and copy middleware response
+/// metadata that is meaningful on a handshake (request IDs, security policy,
+/// tracing, and `Set-Cookie`). Hop-by-hop, body, and WebSocket protocol headers
+/// remain owned by this adapter and are never overridden by middleware.
+pub fn switching_protocols_with_headers(
+    sec_websocket_key: &str,
+    middleware_headers: &HeaderMap,
+) -> HyperResponse<Body> {
     let accept = accept_key(sec_websocket_key);
     let mut res = HyperResponse::new(body_full(Bytes::new()));
     *res.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
@@ -254,7 +266,32 @@ pub fn switching_protocols(sec_websocket_key: &str) -> HyperResponse<Body> {
         HeaderName::from_static("sec-websocket-version"),
         HeaderValue::from_static("13"),
     );
+    for (name, value) in middleware_headers {
+        if is_middleware_handshake_header(name) {
+            res.headers_mut().append(name.clone(), value.clone());
+        }
+    }
     res
+}
+
+fn is_middleware_handshake_header(name: &HeaderName) -> bool {
+    !matches!(
+        name.as_str(),
+        "connection"
+            | "upgrade"
+            | "keep-alive"
+            | "proxy-connection"
+            | "transfer-encoding"
+            | "te"
+            | "trailer"
+            | "content-length"
+            | "content-type"
+            | "sec-websocket-accept"
+            | "sec-websocket-version"
+            | "sec-websocket-key"
+            | "sec-websocket-extensions"
+            | "sec-websocket-protocol"
+    )
 }
 
 /// 升级连接并跑业务 handler。

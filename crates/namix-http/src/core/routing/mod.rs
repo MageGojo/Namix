@@ -8,6 +8,7 @@ mod ts_routes;
 pub use catalog::{IntoRouteName, NamedRoute, RouteCatalog, RouteExport};
 pub use route::Route;
 pub use router::Router;
+pub(crate) use router::WsHandshakeOutcome;
 
 use crate::core::middleware::BoxFuture;
 use crate::core::request::Request;

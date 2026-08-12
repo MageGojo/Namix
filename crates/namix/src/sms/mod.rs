@@ -100,10 +100,10 @@ impl Sms {
         match rt.driver.as_str() {
             "log" | "file" => {
                 crate::log::info!(
-                    "sms:send driver={} to={} body={}",
+                    "sms:send driver={} to={} bytes={}",
                     rt.driver,
                     msg.to,
-                    msg.body
+                    msg.body.len()
                 );
                 append_jsonl(&rt.store.join("sent.jsonl"), &msg, &rt.lock)?;
                 Ok(())

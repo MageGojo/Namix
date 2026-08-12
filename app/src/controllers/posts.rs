@@ -1,10 +1,12 @@
-//! 我的文章。
+//! 我的文章。写路径经 `PostPolicy`：会话身份对照库记录 `user_id`。
 
 use namix::prelude::*;
 use serde::Serialize;
 
 use crate::middleware::extract::AuthUser;
+use crate::models::post::Post;
 use crate::models::user::User;
+use crate::policies::post_policy::PostPolicy;
 use crate::route;
 use crate::services::user::UserService;
 use crate::validators::post_form::PostRequest;
@@ -12,6 +14,7 @@ use crate::validators::post_form::PostRequest;
 #[derive(Debug, Clone, Serialize, ViewData)]
 #[serde(rename_all = "camelCase")]
 pub struct PostItem {
+    pub id: u64,
     pub title: String,
     pub body: String,
 }
@@ -35,6 +38,7 @@ pub async fn index(req: Request, user: AuthUser) -> Response {
     let items: Vec<PostItem> = posts
         .into_iter()
         .map(|p| PostItem {
+            id: p.id,
             title: p.title,
             body: p.body,
         })
@@ -52,12 +56,39 @@ pub async fn index(req: Request, user: AuthUser) -> Response {
         .render()
 }
 
-pub async fn create(req: Request, user: AuthUser, form: PostRequest) -> Response {
+pub async fn create(req: Request, user: AuthUser, form: PostRequest) -> Result<Response, AppError> {
+    authorize(&*user, &PostPolicy, Ability::Create, None)?;
     match UserService::new()
         .create_post(user.id, &form.title, &form.body)
         .await
     {
-        Ok(_) => req.see_other_to(route::main::posts),
-        Err(error) => req.redirect_error_to(route::main::posts, error.message()),
+        Ok(_) => Ok(req.see_other_to(route::main::posts)),
+        Err(error) => Ok(req.redirect_error_to(route::main::posts, error.message())),
     }
+}
+
+/// POST /posts/:id — 表单只带 title/body；归属以库中 `Post` 为准。
+pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<Response, AppError> {
+    let id = parse_id(&req)?;
+    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+    authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
+    UserService::new()
+        .update_post(post.id, &form.title, &form.body)
+        .await?;
+    Ok(req.see_other_to(route::main::posts))
+}
+
+/// POST /posts/:id/delete — HTML 表单用 POST；仍走 Policy::Delete。
+pub async fn destroy(req: Request, user: AuthUser) -> Result<Response, AppError> {
+    let id = parse_id(&req)?;
+    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+    authorize(&*user, &PostPolicy, Ability::Delete, Some(&post))?;
+    UserService::new().delete_post(post.id).await?;
+    Ok(req.see_other_to(route::main::posts))
+}
+
+fn parse_id(req: &Request) -> Result<u64, AppError> {
+    req.param("id")
+        .and_then(|raw| raw.parse().ok())
+        .ok_or(AppError::NotFound)
 }

@@ -45,7 +45,7 @@ fn page_data(page: u32, title: impl Into<String>) -> DemoPage {
         .map(|id| DemoItem {
             id,
             title: format!("条目 #{id:03}"),
-            summary: format!("这是第 {id} 条演示数据，纯 SSR 渲染，无客户端 hydrate。"),
+            summary: format!("这是第 {id} 条演示数据；SSR 正文缺失时由内联客户端可靠挂载。"),
         })
         .collect();
 

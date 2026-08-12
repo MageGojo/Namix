@@ -2,11 +2,13 @@
 
 pub mod content_type;
 pub mod controller;
+pub mod crypt;
 pub mod csrf;
 pub mod error;
 pub mod extract;
 pub mod handler;
 pub mod middleware;
+pub mod proxy;
 pub mod rate_limit;
 pub mod request;
 pub mod response;

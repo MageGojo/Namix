@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -32,6 +33,62 @@ pub struct NamixToml {
     pub sms: SmsSection,
     #[serde(default)]
     pub security: SecuritySection,
+    #[serde(default)]
+    pub session: SessionSection,
+}
+
+/// `[session]` — authenticated session persistence and token lifetimes.
+///
+/// ```toml
+/// [session]
+/// driver = "memory"           # memory | file | redis
+/// path = "./storage/sessions" # file driver root (shared via dist/data)
+/// lifetime_secs = 604800      # cookie / opaque session (7d)
+/// jwt_lifetime_secs = 3600    # Bearer JWT access token (1h)
+/// ```
+///
+/// `memory` is the development default and is **not** safe across overlapping
+/// processes. Production rolling updates require `file` (shared data plane) or
+/// `redis` (application-wired [`crate::RedisSessionStore`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionSection {
+    #[serde(default = "default_session_driver")]
+    pub driver: String,
+    #[serde(default = "default_session_path")]
+    pub path: String,
+    /// Absolute lifetime for cookie / opaque session tokens (seconds).
+    #[serde(default = "default_session_lifetime_secs")]
+    pub lifetime_secs: u64,
+    /// Lifetime for HS256 JWT access tokens issued for API Bearer auth.
+    #[serde(default = "default_jwt_lifetime_secs")]
+    pub jwt_lifetime_secs: u64,
+}
+
+impl Default for SessionSection {
+    fn default() -> Self {
+        Self {
+            driver: default_session_driver(),
+            path: default_session_path(),
+            lifetime_secs: default_session_lifetime_secs(),
+            jwt_lifetime_secs: default_jwt_lifetime_secs(),
+        }
+    }
+}
+
+fn default_session_driver() -> String {
+    "memory".into()
+}
+
+fn default_session_path() -> String {
+    "./storage/sessions".into()
+}
+
+fn default_session_lifetime_secs() -> u64 {
+    60 * 60 * 24 * 7
+}
+
+fn default_jwt_lifetime_secs() -> u64 {
+    60 * 60
 }
 
 /// `[security]` — browser protection, runtime environment, and secrets.
@@ -155,6 +212,8 @@ impl ConfigError {
 }
 static SESSION_SECRET: OnceLock<String> = OnceLock::new();
 static SESSION_COOKIE_SECURE: OnceLock<bool> = OnceLock::new();
+static SESSION_LIFETIME: OnceLock<Duration> = OnceLock::new();
+static JWT_LIFETIME: OnceLock<Duration> = OnceLock::new();
 
 /// Runtime session-signing key installed by [`crate::Boot`].
 pub fn session_secret() -> Option<&'static str> {
@@ -166,6 +225,22 @@ pub fn session_cookie_secure() -> bool {
     *SESSION_COOKIE_SECURE.get().unwrap_or(&false)
 }
 
+/// Cookie / opaque session absolute lifetime (from `[session].lifetime_secs`).
+pub fn session_lifetime() -> Duration {
+    SESSION_LIFETIME
+        .get()
+        .copied()
+        .unwrap_or_else(|| Duration::from_secs(default_session_lifetime_secs()))
+}
+
+/// JWT access-token lifetime (from `[session].jwt_lifetime_secs`).
+pub fn jwt_lifetime() -> Duration {
+    JWT_LIFETIME
+        .get()
+        .copied()
+        .unwrap_or_else(|| Duration::from_secs(default_jwt_lifetime_secs()))
+}
+
 pub(crate) fn install_session_secret(value: Option<String>, secure_cookie: bool) {
     let value = value
         .or_else(|| std::env::var("NAMIX_SESSION_SECRET").ok())
@@ -174,6 +249,11 @@ pub(crate) fn install_session_secret(value: Option<String>, secure_cookie: bool)
         let _ = SESSION_SECRET.set(value);
     }
     let _ = SESSION_COOKIE_SECURE.set(secure_cookie);
+}
+
+pub(crate) fn install_session_lifetimes(session: &SessionSection) {
+    let _ = SESSION_LIFETIME.set(Duration::from_secs(session.lifetime_secs.max(1)));
+    let _ = JWT_LIFETIME.set(Duration::from_secs(session.jwt_lifetime_secs.max(1)));
 }
 
 /// `[mail]` — 邮件发送 / 入站落库。
@@ -231,7 +311,7 @@ pub struct SmsSection {
     pub from: String,
     #[serde(default = "default_sms_store")]
     pub store: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub log_otp: bool,
 }
 
@@ -241,7 +321,7 @@ impl Default for SmsSection {
             driver: default_sms_driver(),
             from: default_sms_from(),
             store: default_sms_store(),
-            log_otp: true,
+            log_otp: false,
         }
     }
 }
@@ -268,8 +348,8 @@ fn default_sms_store() -> String {
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseSection {
-    /// `false` 时 Boot 不连库（即使编进了对应 feature）。
-    #[serde(default = "default_true")]
+    /// `false` 时 Boot 不连库（默认；即使编进了对应 feature）。
+    #[serde(default)]
     pub enabled: bool,
     /// 驱动提示（文档/脚手架）；真实连接以 `url` / `DATABASE_URL` 为准。
     #[serde(default = "default_db_driver")]
@@ -297,7 +377,7 @@ pub struct DatabaseSection {
 impl Default for DatabaseSection {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             driver: default_db_driver(),
             url: String::new(),
             host: None,
@@ -421,17 +501,30 @@ where
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FeaturesSection {
+    /// `src/models/` — Toasty 实体与查询助手
     #[serde(default)]
     pub models: bool,
+    /// `src/services/` — 写库与领域服务
     #[serde(default)]
     pub services: bool,
-    /// 表单验证器目录 `common/validators/`（或单应用 `src/validators/`）
+    /// `src/validators/` — 表单验证器
     #[serde(default)]
     pub validators: bool,
+    /// `src/requests/` — 请求 DTO 目录（可选分层）
     #[serde(default)]
     pub requests: bool,
+    /// `src/views/` — React 页面（`req.view`）；需 Cargo feature `pages`
     #[serde(default)]
     pub pages: bool,
+    /// `src/events/` — 领域事件类型
+    #[serde(default)]
+    pub events: bool,
+    /// `src/listeners/` — 事件监听器
+    #[serde(default)]
+    pub listeners: bool,
+    /// `src/seeders/` — 种子数据
+    #[serde(default)]
+    pub seeders: bool,
     /// `#[server]` 传输密封：`true`=生产整包加密；`false`=开发明文 JSON。
     /// 也可用环境变量 `NAMIX_ACTION_SEAL=0|1` 覆盖。
     #[serde(default = "default_true")]
@@ -446,6 +539,9 @@ impl Default for FeaturesSection {
             validators: false,
             requests: false,
             pages: false,
+            events: false,
+            listeners: false,
+            seeders: false,
             action_seal: true,
         }
     }
@@ -470,6 +566,15 @@ impl NamixToml {
     /// production-only secrets and TLS requirements from failing halfway
     /// through a request.
     pub fn validate(&self, app_name: &str) -> Result<(), ConfigError> {
+        let environment = self.resolved_environment();
+        self.validate_in_environment(app_name, &environment)
+    }
+
+    fn validate_in_environment(
+        &self,
+        app_name: &str,
+        environment: &str,
+    ) -> Result<(), ConfigError> {
         let mut messages = Vec::new();
         let Some(app) = self.apps.get(app_name) else {
             return Err(ConfigError::one(format!(
@@ -480,16 +585,43 @@ impl NamixToml {
         if app.port == Some(0) || app.https_port == Some(0) {
             messages.push("listener ports must be between 1 and 65535".into());
         }
+        if app.port.is_some() && app.bind.is_some() {
+            messages.push("configure either apps.*.port or apps.*.bind, not both".into());
+        }
+        if let Some(bind) = app.bind.as_deref() {
+            match bind.parse::<SocketAddr>() {
+                Ok(address) if address.port() > 0 => {}
+                _ => messages.push(
+                    "apps.*.bind must be a numeric socket address with a non-zero port".into(),
+                ),
+            }
+        }
+        if let HttpsConfig::Addr(address) = &app.https {
+            match address.parse::<SocketAddr>() {
+                Ok(address) if address.port() > 0 => {}
+                _ => messages.push(
+                    "apps.*.https address must be a numeric socket address with a non-zero port"
+                        .into(),
+                ),
+            }
+        }
+        if app.port.is_none() && app.bind.is_none() && matches!(app.https, HttpsConfig::Off) {
+            messages.push("application must configure an HTTP or HTTPS listener".into());
+        }
         if app.hosts.iter().any(|host| host.trim().is_empty())
             || app.tls_hosts.iter().any(|host| host.trim().is_empty())
         {
             messages.push("hosts and tls_hosts must not contain empty values".into());
         }
-        if !matches!(
-            self.security.environment.as_str(),
-            "development" | "test" | "production"
-        ) {
-            messages.push("security.environment must be development, test, or production".into());
+        if let Err(error) = crate::TrustedProxies::new(&self.security.trusted_proxies) {
+            messages.push(format!("security.trusted_proxies: {error}"));
+        }
+        if !matches!(environment, "development" | "test" | "production") {
+            messages.push(
+                "resolved environment (NAMIX_ENV or security.environment) must be development, \
+                 test, or production"
+                    .into(),
+            );
         }
         if self.security.rate_limit.enabled && self.security.rate_limit.window_seconds == 0 {
             messages.push("security.rate_limit.window_seconds must be greater than 0".into());
@@ -504,25 +636,66 @@ impl NamixToml {
                     | "postgresql"
                     | "postgres"
                     | "pg"
+                    | "turso"
+                    | "dynamodb"
                     | "custom"
             )
         {
             messages.push("database.driver is not supported".into());
         }
         if self.database.enabled
-            && self.database.driver.eq_ignore_ascii_case("custom")
+            && matches!(
+                self.database.driver.trim().to_ascii_lowercase().as_str(),
+                "custom" | "turso" | "dynamodb"
+            )
             && self.database.url.trim().is_empty()
             && std::env::var("DATABASE_URL")
                 .ok()
                 .is_none_or(|url| url.trim().is_empty())
         {
-            messages.push("database.driver=custom requires database.url or DATABASE_URL".into());
+            messages.push(
+                "database.driver=custom/turso/dynamodb requires database.url or DATABASE_URL"
+                    .into(),
+            );
+        }
+        if self.database.enabled && !database_driver_is_compiled(&self.database.driver) {
+            messages.push(format!(
+                "database.driver={} is not compiled into this application; enable the matching namix Cargo feature",
+                self.database.driver.trim()
+            ));
         }
 
-        if self.is_production() {
+        let session_driver = self.session.driver.trim().to_ascii_lowercase();
+        if !matches!(session_driver.as_str(), "memory" | "file" | "redis" | "") {
+            messages.push("session.driver must be memory, file, or redis".into());
+        }
+        if session_driver == "file" && self.session.path.trim().is_empty() {
+            messages.push("session.driver=file requires session.path".into());
+        }
+        if self.session.lifetime_secs == 0 {
+            messages.push("session.lifetime_secs must be greater than 0".into());
+        }
+        if self.session.jwt_lifetime_secs == 0 {
+            messages.push("session.jwt_lifetime_secs must be greater than 0".into());
+        }
+
+        if environment == "production" {
             if matches!(app.https, HttpsConfig::Off) && !self.security.tls_terminated_by_proxy {
                 messages.push(
                     "production requires HTTPS or security.tls_terminated_by_proxy = true".into(),
+                );
+            }
+            if self.security.tls_terminated_by_proxy && !app_is_loopback_only(app) {
+                messages.push(
+                    "production with security.tls_terminated_by_proxy=true must bind only to \
+                     loopback; expose it through the trusted TLS proxy"
+                        .into(),
+                );
+            }
+            if self.security.tls_terminated_by_proxy && self.security.trusted_proxies.is_empty() {
+                messages.push(
+                    "production TLS proxy mode requires security.trusted_proxies so client IP headers can be validated"
+                        .into(),
                 );
             }
             if !self.security.csrf {
@@ -548,6 +721,20 @@ impl NamixToml {
                 messages
                     .push("production session secret must contain at least 32 characters".into());
             }
+            // Memory sessions cannot survive process overlap. Operators who
+            // intentionally accept a cold cut may set NAMIX_ALLOW_MEMORY_SESSIONS=1.
+            if matches!(session_driver.as_str(), "memory" | "") && !allow_memory_sessions_override()
+            {
+                messages.push(
+                    "production requires session.driver=file or redis for overlap-safe \
+                     releases; memory is single-process only (set \
+                     NAMIX_ALLOW_MEMORY_SESSIONS=1 to acknowledge a maintenance-window cut)"
+                        .into(),
+                );
+            }
+            if self.sms.log_otp {
+                messages.push("production requires sms.log_otp = false".into());
+            }
         }
 
         if messages.is_empty() {
@@ -558,10 +745,21 @@ impl NamixToml {
     }
 
     pub fn is_production(&self) -> bool {
+        self.resolved_environment() == "production"
+    }
+
+    fn resolved_environment(&self) -> String {
         std::env::var("NAMIX_ENV")
             .ok()
             .unwrap_or_else(|| self.security.environment.clone())
-            .eq_ignore_ascii_case("production")
+            .trim()
+            .to_ascii_lowercase()
+    }
+
+    /// True when the configured session driver can be shared by overlapping
+    /// processes (rolling `nx update`).
+    pub fn session_is_shared(&self) -> bool {
+        crate::session::driver_is_shared(&self.session.driver)
     }
 
     /// 按应用名组装 Server（可再叠加 CLI `-p` / `-h` / `--https`）。
@@ -582,7 +780,7 @@ impl NamixToml {
                 .and_then(|b| b.rsplit_once(':')?.1.parse().ok())
         });
 
-        let mut server = if let Some(port) = http_port {
+        let mut server = if let Some(port) = app.port {
             Server::new().bind(SocketAddr::new(ip, port).to_string())
         } else if let Some(bind) = &app.bind {
             let mut s = Server::new().bind(bind);
@@ -621,6 +819,52 @@ impl NamixToml {
         }
 
         server
+    }
+}
+
+fn app_is_loopback_only(app: &AppConfig) -> bool {
+    if app.lan {
+        return false;
+    }
+    let Some(bind) = app
+        .bind
+        .as_deref()
+        .map(str::trim)
+        .filter(|bind| !bind.is_empty())
+    else {
+        // A port-only config binds to loopback while `lan=false`.
+        return true;
+    };
+    if let Ok(address) = bind.parse::<SocketAddr>() {
+        return address.ip().is_loopback();
+    }
+    let host = bind.rsplit_once(':').map(|(host, _)| host).unwrap_or(bind);
+    matches!(
+        host.trim_matches(['[', ']']),
+        "localhost" | "127.0.0.1" | "::1"
+    )
+}
+
+fn allow_memory_sessions_override() -> bool {
+    matches!(
+        std::env::var("NAMIX_ALLOW_MEMORY_SESSIONS")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn database_driver_is_compiled(driver: &str) -> bool {
+    match driver.trim().to_ascii_lowercase().as_str() {
+        "sqlite" | "sqlite3" => cfg!(feature = "sqlite"),
+        "mysql" | "mariadb" => cfg!(feature = "mysql"),
+        "postgresql" | "postgres" | "pg" => cfg!(feature = "postgresql"),
+        "turso" => cfg!(feature = "turso"),
+        "dynamodb" => cfg!(feature = "dynamodb"),
+        // Custom connectors are supplied by the application.
+        "custom" => true,
+        _ => false,
     }
 }
 
@@ -672,6 +916,36 @@ mod tests {
             push_schema = false
             [features]
             action_seal = true
+            [session]
+            driver = "file"
+            path = "./storage/sessions"
+            [security]
+            environment = "production"
+            csrf = true
+            tls_terminated_by_proxy = true
+            trusted_proxies = ["127.0.0.1"]
+            session_secret = "a-very-long-production-session-secret"
+            [apps.main]
+            bind = "127.0.0.1:3000"
+            https = false
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.validate("main").is_ok());
+        assert!(cfg.session_is_shared());
+    }
+
+    #[test]
+    fn production_rejects_memory_session_driver_by_default() {
+        let cfg = NamixToml::try_parse(
+            r#"
+            [database]
+            enabled = false
+            push_schema = false
+            [features]
+            action_seal = true
+            [session]
+            driver = "memory"
             [security]
             environment = "production"
             csrf = true
@@ -683,7 +957,8 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(cfg.validate("main").is_ok());
+        let text = cfg.validate("main").unwrap_err().to_string();
+        assert!(text.contains("session.driver"));
     }
 
     #[test]
@@ -703,5 +978,159 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.validate("main").is_ok());
+    }
+
+    #[test]
+    fn invalid_environment_override_is_rejected() {
+        let cfg = NamixToml::try_parse(
+            r#"
+            [security]
+            environment = "development"
+            [apps.main]
+            port = 3000
+            "#,
+        )
+        .unwrap();
+        let error = cfg
+            .validate_in_environment("main", "prodution")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("resolved environment"));
+    }
+
+    #[test]
+    fn environment_override_to_production_enforces_production_rules() {
+        let cfg = NamixToml::try_parse(
+            r#"
+            [security]
+            environment = "development"
+            csrf = false
+            [features]
+            action_seal = false
+            [apps.main]
+            port = 3000
+            https = false
+            "#,
+        )
+        .unwrap();
+        let error = cfg
+            .validate_in_environment("main", "production")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("HTTPS"));
+        assert!(error.contains("csrf"));
+        assert!(error.contains("action_seal"));
+    }
+
+    #[test]
+    fn tls_terminating_proxy_requires_a_loopback_bind() {
+        let cfg = NamixToml::try_parse(
+            r#"
+            [features]
+            action_seal = true
+            [session]
+            driver = "file"
+            [security]
+            csrf = true
+            tls_terminated_by_proxy = true
+            session_secret = "a-very-long-production-session-secret"
+            [apps.main]
+            bind = "0.0.0.0:3000"
+            https = false
+            "#,
+        )
+        .unwrap();
+        let error = cfg
+            .validate_in_environment("main", "production")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("loopback"));
+    }
+
+    #[test]
+    fn reserved_database_session_driver_is_rejected_at_validation() {
+        let cfg = NamixToml::try_parse(
+            r#"
+            [session]
+            driver = "database"
+            [apps.main]
+            port = 3000
+            "#,
+        )
+        .unwrap();
+        assert!(
+            cfg.validate_in_environment("main", "development")
+                .unwrap_err()
+                .to_string()
+                .contains("session.driver")
+        );
+    }
+
+    #[test]
+    fn listener_validation_rejects_ambiguous_or_invalid_bindings() {
+        let both = NamixToml::try_parse(
+            r#"
+            [apps.main]
+            port = 3000
+            bind = "127.0.0.1:3001"
+            "#,
+        )
+        .unwrap();
+        assert!(
+            both.validate("main")
+                .unwrap_err()
+                .to_string()
+                .contains("not both")
+        );
+
+        let invalid = NamixToml::try_parse(
+            r#"
+            [apps.main]
+            bind = "localhost:not-a-port"
+            "#,
+        )
+        .unwrap();
+        assert!(
+            invalid
+                .validate("main")
+                .unwrap_err()
+                .to_string()
+                .contains("numeric socket address")
+        );
+    }
+
+    #[test]
+    fn explicit_bind_address_is_preserved_by_server_builder() {
+        let cfg = NamixToml::try_parse(
+            r#"
+            [apps.main]
+            bind = "127.0.0.2:4321"
+            "#,
+        )
+        .unwrap();
+        cfg.validate("main").unwrap();
+        assert_eq!(
+            cfg.server_for("main").http_addr().unwrap().to_string(),
+            "127.0.0.2:4321"
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_entries_are_validated_at_startup() {
+        let cfg = NamixToml::try_parse(
+            r#"
+            [security]
+            trusted_proxies = ["127.0.0.1/64"]
+            [apps.main]
+            port = 3000
+            "#,
+        )
+        .unwrap();
+        assert!(
+            cfg.validate("main")
+                .unwrap_err()
+                .to_string()
+                .contains("trusted_proxies")
+        );
     }
 }

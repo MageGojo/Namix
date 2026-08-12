@@ -23,14 +23,19 @@ esac
 
 LOCAL_RELEASE="$PWD/dist/$VERSION"
 [[ -f "$LOCAL_RELEASE/app" ]] || { echo "missing release: $LOCAL_RELEASE" >&2; exit 2; }
+[[ -f "$LOCAL_RELEASE/MANIFEST.json" ]] || { echo "missing release manifest: $LOCAL_RELEASE/MANIFEST.json" >&2; exit 2; }
 INCOMING="$NAMIX_DEPLOY_ROOT/dist/.incoming-$VERSION"
 RELEASE="$NAMIX_DEPLOY_ROOT/dist/$VERSION"
+
+echo "uploading $VERSION; server nx preflight will validate platform and Action seal public key before exec"
 
 ssh "$NAMIX_DEPLOY_HOST" sh -s -- "$NAMIX_DEPLOY_ROOT" "$VERSION" <<'REMOTE_PREPARE'
 set -eu
 root=$1 version=$2
 [ -d "$root" ] || { echo "remote project root missing: $root" >&2; exit 2; }
 [ ! -e "$root/dist/$version" ] || { echo "release already exists: $version" >&2; exit 2; }
+key="$root/dist/data/storage/action_seal.key"
+[ -f "$key" ] || { echo "remote Action seal key missing: $key (provision the shared 0600 key before deploy)" >&2; exit 2; }
 mkdir -p "$root/dist/.incoming-$version"
 REMOTE_PREPARE
 

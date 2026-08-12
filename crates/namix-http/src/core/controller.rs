@@ -112,7 +112,8 @@ pub trait Controller {
 impl Controller for Request {
     fn flash(&self) -> Flash {
         if let Some(raw) = self.cookie(FLASH_COOKIE) {
-            return Flash::parse_cookie(raw);
+            let opened = crate::core::crypt::open_value(raw);
+            return Flash::parse_cookie(&opened);
         }
         let error = self
             .query("error")
@@ -272,5 +273,10 @@ pub fn redirect_permanent(to: impl AsRef<str>) -> Response {
 }
 
 pub(crate) fn flash_cookie_error(msg: &str) -> String {
-    format!("e:{}", query_encode_pub(msg))
+    let plain = format!("e:{}", query_encode_pub(msg));
+    crate::core::crypt::seal_value(&plain)
+}
+
+pub(crate) fn flash_cookie_ok() -> String {
+    crate::core::crypt::seal_value("ok")
 }

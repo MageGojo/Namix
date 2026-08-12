@@ -245,6 +245,45 @@ impl UserService {
         .map_err(AppError::internal)
     }
 
+    /// 更新文章内容（调用方须已 `authorize`）。
+    pub async fn update_post(
+        &self,
+        post_id: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<Post, AppError> {
+        let title = title.to_string();
+        let body = body.to_string();
+        db::run(move |mut db| {
+            let title = title.clone();
+            let body = body.clone();
+            async move {
+                let mut post = Post::get_by_id(&mut db, post_id).await?;
+                toasty::update!(post {
+                    title: title.as_str(),
+                    body: body.as_str(),
+                })
+                .exec(&mut db)
+                .await?;
+                Post::get_by_id(&mut db, post_id).await
+            }
+        })
+        .await
+        .map_err(AppError::internal)
+    }
+
+    /// 删除文章（调用方须已 `authorize`）。
+    pub async fn delete_post(&self, post_id: u64) -> Result<(), AppError> {
+        db::run(move |mut db| async move {
+            Post::filter(Post::fields().id().eq(post_id))
+                .delete()
+                .exec(&mut db)
+                .await
+        })
+        .await
+        .map_err(AppError::internal)
+    }
+
     /// 设置 VIP（种子 / 管理用）。
     pub async fn set_vip(&self, user_id: u64, is_vip: bool) -> Result<User, AppError> {
         db::run(move |mut db| async move {

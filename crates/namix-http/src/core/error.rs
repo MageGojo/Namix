@@ -4,7 +4,6 @@
 //! `#[server]` Action 则映射为同一份 `{ message, errors }` 契约。
 
 use std::collections::HashMap;
-use std::error::Error as StdError;
 
 use http::StatusCode;
 use thiserror::Error;
@@ -56,9 +55,9 @@ impl AppError {
     }
 
     /// Wrap an unexpected error without losing its source chain.
-    pub fn internal(error: impl StdError + Send + Sync + 'static) -> Self {
+    pub fn internal(error: impl Into<BoxError>) -> Self {
         Self::Internal {
-            source: Box::new(error),
+            source: error.into(),
         }
     }
 
@@ -234,6 +233,7 @@ fn escape_html(value: &str) -> String {
 mod tests {
     use bytes::Bytes;
     use http::{HeaderMap, Method, Uri};
+    use std::error::Error as _;
 
     use super::*;
 

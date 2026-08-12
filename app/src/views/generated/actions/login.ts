@@ -2,6 +2,6 @@
 import { callRust } from '../callRust'
 
 /** action `login` → token `03c75db6`（路径已混淆） */
-export function login(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+export function login(input?: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return callRust('03c75db6', input)
 }

@@ -83,6 +83,10 @@ impl CsrfProtection {
         let token = cookie_token.clone().unwrap_or_else(new_token);
         req.set(CsrfToken(token.clone()));
 
+        if websocket_requires_same_origin(&req) && !origin_allowed(&req, &self.config) {
+            return rejected(&req);
+        }
+
         if requires_protection(&req, &self.config)
             && (!origin_allowed(&req, &self.config) || !token_matches(&req, &self.config, &token))
         {
@@ -113,6 +117,18 @@ pub fn hidden_field(req: &Request) -> String {
 /// Return the current token for templates which render their own input.
 pub fn token(req: &Request) -> Option<&str> {
     req.get::<CsrfToken>().map(CsrfToken::as_str)
+}
+
+/// Browser WebSocket handshakes are GET requests and therefore do not use the
+/// mutation token check, but cookies are still sent automatically cross-site.
+/// Require a same-origin `Origin` for browser-shaped handshakes. A cookie-free
+/// bearer client remains compatible even when it supplies no Origin.
+fn websocket_requires_same_origin(req: &Request) -> bool {
+    if req.method() != Method::GET || !crate::core::ws::is_upgrade_request(req.headers()) {
+        return false;
+    }
+    let bearer_only = req.bearer().is_some() && req.header("cookie").is_none();
+    !bearer_only && (req.header("origin").is_some() || req.header("cookie").is_some())
 }
 
 fn requires_protection(req: &Request, config: &CsrfConfig) -> bool {
@@ -267,6 +283,25 @@ mod tests {
         Response::new(StatusCode::OK, ContentType::Text, "ok")
     }
 
+    fn terminal() -> Next {
+        Next::new(
+            std::sync::Arc::new(vec![]),
+            0,
+            std::sync::Arc::new(|r| Box::pin(ok(r))),
+        )
+    }
+
+    fn websocket_req(extra_headers: &[(&str, &str)]) -> Request {
+        let mut headers = vec![
+            ("host", "app.test"),
+            ("connection", "Upgrade"),
+            ("upgrade", "websocket"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ];
+        headers.extend_from_slice(extra_headers);
+        req(Method::GET, &headers, "")
+    }
+
     #[tokio::test]
     async fn safe_request_issues_readable_csrf_cookie() {
         let guard = CsrfProtection::new(CsrfConfig::default());
@@ -329,6 +364,53 @@ mod tests {
                     0,
                     std::sync::Arc::new(|r| Box::pin(ok(r))),
                 ),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn cookie_websocket_requires_same_origin() {
+        let guard = CsrfProtection::new(CsrfConfig::default());
+
+        let response = guard
+            .handle(
+                websocket_req(&[
+                    ("origin", "https://app.test"),
+                    ("cookie", "namix_session=session"),
+                ]),
+                terminal(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = guard
+            .handle(
+                websocket_req(&[
+                    ("origin", "https://attacker.test"),
+                    ("cookie", "namix_session=session"),
+                ]),
+                terminal(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = guard
+            .handle(
+                websocket_req(&[("cookie", "namix_session=session")]),
+                terminal(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn cookie_free_bearer_websocket_remains_origin_independent() {
+        let guard = CsrfProtection::new(CsrfConfig::default());
+        let response = guard
+            .handle(
+                websocket_req(&[("authorization", "Bearer TOKEN")]),
+                terminal(),
             )
             .await;
         assert_eq!(response.status(), StatusCode::OK);

@@ -2,6 +2,6 @@
 import { callRust } from '../callRust'
 
 /** action `sms_send_code` → token `2526604b`（路径已混淆） */
-export function sms_send_code(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+export function sms_send_code(input?: Record<string, unknown>): Promise<Record<string, unknown>> {
 	return callRust('2526604b', input)
 }

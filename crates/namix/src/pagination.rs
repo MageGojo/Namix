@@ -25,7 +25,10 @@ impl<T> Paginator<T> {
     {
         let mut items: Vec<T> = items.into_iter().collect();
         let total = items.len();
-        let per_page = query.per_page;
+        // `QueryOptions::from_request` already validates this range, but
+        // callers may construct `QueryOptions` directly. Normalize here as
+        // the final invariant boundary so `div_ceil(0)` never panics.
+        let per_page = query.per_page.clamp(1, QueryOptions::MAX_PER_PAGE);
         let last_page = total.div_ceil(per_page).max(1);
         let current_page = query.page.min(last_page).max(1);
         let start = (current_page - 1) * per_page;
@@ -172,5 +175,24 @@ mod tests {
             (page.total, page.last_page, page.from, page.to),
             (5, 3, 3, 4)
         );
+    }
+
+    #[test]
+    fn normalizes_directly_constructed_page_size() {
+        let zero = QueryOptions {
+            per_page: 0,
+            ..QueryOptions::default()
+        };
+        let page = Paginator::from_items(1..=3, &zero);
+        assert_eq!(page.per_page, 1);
+        assert_eq!(page.data, vec![1]);
+
+        let oversized = QueryOptions {
+            per_page: QueryOptions::MAX_PER_PAGE + 1,
+            ..QueryOptions::default()
+        };
+        let page = Paginator::from_items(0..150, &oversized);
+        assert_eq!(page.per_page, QueryOptions::MAX_PER_PAGE);
+        assert_eq!(page.data.len(), QueryOptions::MAX_PER_PAGE);
     }
 }
