@@ -52,7 +52,7 @@ app（业务示例）
 ## P1/P2 平台能力
 
 - `resource`、`Paginator`/`QueryOptions`、`Policy`/`Gate` 用于统一 CRUD、查询与授权语义。写路径：`authorize(actor, policy, ability, Some(&resource_from_db))`——会话身份对照库记录归属，不信前端自称的 `user_id`。详见 [`07-authorization.md`](./07-authorization.md)。
-- `Cache`、`Queue`、`Storage` 均通过 driver trait 抽象；默认内存/本地实现可在开发直接运行。`StorageError` 提供可匹配的策略/I/O 类别，队列 Job 使用可保留上下文链的 `anyhow::Result`。
+- `Cache`、`Queue`、`Storage` 均通过 driver trait 抽象。Storage 用 `namix.toml [storage]` 命名磁盘（默认 `local` + `public`），`Storage::disk` / `Storage::fake`；公开文件 `GET /storage/*`，`nx storage link` 建符号链接。S3/FTP/SFTP 不内置协议 crate，用 `Storage::extend`。`StorageError` 提供可匹配的策略/I/O 类别，队列 Job 使用可保留上下文链的 `anyhow::Result`。
 - `TestClient` 可对路由、Cookie、表单、Action 和 WS 路由做进程内测试；`AppError::internal` 保留 source chain 并安全地映射为 500；请求 ID 与 tracing span 为 OpenTelemetry subscriber 提供结构化信号。
 - `nx make` 可生成 controller、resource、policy、job、mail、notification 和 test 骨架。
 - 发布层使用不可变 `dist/<version>`、共享 `dist/data`、候选 PID ready 标记、原子 `current` 指针和优雅排水；稳定生产配置由 `dist/data/namix.toml` 经 `NAMIX_CONFIG` 注入；滚动更新前检查共享 Session Store。详见 [`PRODUCTION.md`](./PRODUCTION.md)。

@@ -5,8 +5,9 @@ description: >-
   routes/controllers, Toasty, Island/SSR, #[server] actions). Use when working
   in the Namix repo or any Namix app, writing controllers/routes/validators/
   models/pages, or when the user mentions Namix, nx new, nx make, req.view,
-  #[server], FormRequest, PostPolicy, useForm, CsrfField, or Laravel-like Rust
-  web apps. Never treat Namix as a separate SPA + REST API split.
+  #[server], FormRequest, PostPolicy, useForm, CsrfField, Storage::disk,
+  nx storage link, or Laravel-like Rust web apps. Never treat Namix as a
+  separate SPA + REST API split.
 ---
 
 # Namix Framework Skill
@@ -23,7 +24,7 @@ Namix = **一体全栈**（Rust 服务端 + 同仓 React 页面），不是前�
 
 **本仓库默认**：任何 Namix / `nx` / `app/src/views` 相关编码，先读本 skill。
 
-也适用于：新功能、`nx new` / `nx make`、路由/控制器/校验/模型/Policy、React 页面与 Action。
+也适用于：新功能、`nx new` / `nx make`、路由/控制器/校验/模型/Policy、React 页面与 Action、文件上传 / `Storage::disk`。
 
 ## 铁律：禁止前后端分离写法
 
@@ -82,6 +83,8 @@ Task Progress:
 - 短响应：`GET "/greeting" => || "Hello World"` 或 `Route::get("/greeting", || "Hello World")`；读库/页面仍用 `async fn`
 - 当前用户：参数 `user: AuthUser`，或 `req.user()`；字段 `req.input("title")`
 - 第三方 API：业务包 `reqwest` 写在 `services/`；`#[server]` 只 return 展示 DTO，Key 不进 `ActionOk`
+- 用户文件：`Storage::disk("local")?`（或 `default_disk`）；`put_file` / `put_with_policy`。不要每次 `Storage::new(LocalStorage::new(...))`。`UploadedFile` 没有 `.store()`
+- 公开上传：`Storage::disk("public")` → `GET /storage/…`；`nx storage link`。私有文件用控制器或 `temporary_url`，不要挂裸 URL
 
 ### 目录（业务）
 
@@ -109,6 +112,8 @@ lean 默认只有 controllers/routes/middleware/views；其余见 `docs/FEATURES
 - **角色** → `User.role` + `namix::access` + `require_admin`，仍不要 props 下发角色
 - **副作用** → `dispatch` / `listen`（`docs/10-events.md`）
 - **CRUD 七件套** → `resource("posts", Ctrl)` 或手写 POST（SSR 友好）
+- **文件上传** → 经典 `multipart` + `<CsrfField />` + `Storage::disk("local")?.put_file`（不要塞进 `#[server]` JSON）
+- **公开静态上传** → `public` disk + `nx storage link`；Vite 打包资源仍走 `import … ?url`，见 `docs/05-frontend.md` §7
 
 ## CLI
 
@@ -122,6 +127,7 @@ nx make resource Posts
 nx make validator PostForm
 nx make job WelcomeMail
 nx work                            # 持久队列 worker
+nx storage link                    # public/storage → storage/app/public
 nx dev -p 3000
 nx clean                           # 删 target / node_modules / public/build
 ```
@@ -132,11 +138,12 @@ nx clean                           # 删 target / node_modules / public/build
 - 为每个页面再包一层 axios/react-query 调自建 REST（除非用户明确只要 JSON API）
 - 复制 Laravel Eloquent 魔法到 Toasty（用项目里已有的 `User::find` / `db::run` / `toasty::create!`）
 - 跳过 `docs/07-authorization.md` / `docs/05-frontend.md` 的 CSRF 与零授权 props 约定
+- 为 S3/FTP 往框架默认依赖里加 AWS SDK / ftp crate（用 `Storage::extend`）
 
 ## Progressive disclosure
 
 - 总索引 → 仓库 [`docs/README.md`](../../../docs/README.md)（先看 [`docs/START.md`](../../../docs/START.md)）
 - 控制器 / 路由 / 前端 / 授权 → `docs/01`–`07`
-- 平台 / 邮件 / 事件 / JWT·Crypt → `docs/08`–`11`
+- 平台 / 邮件 / 事件 / JWT·Crypt → `docs/08`–`11`（Storage 见 `docs/08-platform.md` §5、`docs/FEATURES.md` §6.2）
 - 架构决策 → `docs/DECISIONS.md`
 - 下一刀（Rust ↔ React 写体验，不堆 SMTP/OAuth）→ `docs/NEXT.md` DX 节

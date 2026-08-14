@@ -223,6 +223,12 @@ impl Boot {
             )
         })?;
         crate::i18n::init(&cfg.i18n);
+        crate::storage::init(&cfg.storage).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("storage initialization failed: {error}"),
+            )
+        })?;
         #[cfg(feature = "pages")]
         {
             let locale = crate::i18n::locale();
@@ -329,6 +335,7 @@ impl Boot {
                 // a Secure token issued over HTTP would never be echoed by the
                 // browser. Production is HTTPS (directly or at the trusted edge).
                 secure_cookie: cfg.is_production(),
+                except_prefixes: crate::storage::csrf_except_prefixes(),
                 ..CsrfConfig::default()
             };
             server = attach_middleware(server, crate::CsrfProtection::new(csrf).middleware());
@@ -445,6 +452,12 @@ impl Boot {
             )
         })?;
         crate::i18n::init(&cfg.i18n);
+        crate::storage::init(&cfg.storage).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("storage initialization failed: {error}"),
+            )
+        })?;
 
         #[cfg(any(
             feature = "sqlite",
@@ -507,7 +520,8 @@ fn framework_routes(router: Router) -> Router {
                 .name("__namix.routes")
                 .register(),
         )
-        .merge(crate::server_fn::routes());
+        .merge(crate::server_fn::routes())
+        .merge(crate::storage::routes());
 
     #[cfg(feature = "pages")]
     let router = router.merge(crate::pages::routes());

@@ -279,6 +279,16 @@ pub async fn save(req: Request, user: AuthUser, form: ProfileRequest) -> Respons
 
 GET 页用 `req.flash().error` / `.ok` 展示消息（`view` 渲染会 consume flash）。
 
+文件字段必须走这条 multipart 出口（`#[server]` 仍是 JSON，带不上 `File`）。校验取出 `UploadedFile` 后写入命名磁盘，不要每次 `Storage::new(LocalStorage::new(...))`：
+
+```rust
+let storage = Storage::disk("local")?;
+let key = storage.put_file("avatars", &form.avatar)?;
+// 或 storage.put_with_policy(&key, &file.data, &policy)?;
+```
+
+公开只读文件用 `Storage::disk("public")`（`GET /storage/*`）。符号链接：`nx storage link`。详见 [08 §5](./08-platform.md#5-storage)。
+
 ---
 
 ## 4. 提取器：`AuthUser`、`Path`
@@ -420,6 +430,8 @@ pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<R
 | 给 `#[server]` 又写了 `POST /login` | 删掉，只保留 GET 页面 |
 | 软导航拿到带引号的 props | 框架侧用 `json_raw`（业务勿对 page props 再 `json(String)`） |
 | SSR 页里调 `useForm` | 改成 `.island()`，或改用经典 form POST |
+| 每次 `LocalStorage::new("./storage/app", …)` | `Storage::disk("local")?`（Boot 已按 `[storage]` 安装） |
+| 文件塞进 `useForm` / `#[server]` | 经典 `multipart` + `<CsrfField />` + `put_file` |
 | 在控制器里堆 SQL | 抽到 `UserService` 等 |
 | `#[server]` 原样 `return` 第三方 JSON | 映射成展示 DTO；Key 留在 Service |
 | 忘记 `camelCase` | 页面 DTO 加 `#[serde(rename_all = "camelCase")]` |

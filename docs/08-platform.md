@@ -105,21 +105,66 @@ dispatch_job_later(WelcomePing { email: "a@b.c".into() }, Duration::from_secs(5)
 
 ## 5. Storage
 
-```rust
-use namix::prelude::*;
+命名磁盘写在 `namix.toml` `[storage]`（空配置时 Boot 安装 `local` + `public`）。签名密钥从 `session_secret` / `NAMIX_SESSION_SECRET` 派生，重启后临时 URL 仍然有效。
 
-let storage = Storage::new(LocalStorage::new("./storage/app", "/files"));
-storage.put("avatars/a.png", bytes)?;
-// UploadPolicy：限制扩展名 / 最大字节等，违规 → 4xx
-storage.put_with_policy("avatars/a.png", bytes, &policy)?;
-let url = storage.url("avatars/a.png");
-let signed = storage.temporary_url("avatars/a.png", Duration::from_secs(300))?;
-storage.verify_temporary_url(/* key, expires, signature */)?;
-storage.delete("avatars/a.png")?;
+```toml
+[storage]
+default = "local"
+
+[storage.disks.local]
+driver = "local"
+root = "./storage/app"
+url = "/storage/private"
+visibility = "private"
+
+[storage.disks.public]
+driver = "local"
+root = "./storage/app/public"
+url = "/storage"
+visibility = "public"
+
+[storage.links]
+"public/storage" = "storage/app/public"
 ```
 
-- `StorageError`：策略违规 → 4xx；I/O → 带 source 的 500（见 [ERRORS.md](./ERRORS.md)）。
-- S3 等远程驱动可替换 `StorageDriver`；开发用本地目录。
+```rust
+use namix::prelude::*;
+use std::time::Duration;
+
+let storage = Storage::disk("local")?;           // 或 Storage::default_disk()?
+storage.put("avatars/a.png", bytes)?;
+storage.put_with_policy("avatars/a.png", bytes, &policy)?;
+storage.exists("avatars/a.png")?;
+storage.copy("avatars/a.png", "avatars/b.png")?;
+storage.files("avatars")?;                       // 一层；all_files 递归
+let key = storage.put_file("avatars", &uploaded)?;
+storage.set_visibility(&key, Visibility::Private)?;
+let signed = storage.temporary_url(&key, Duration::from_secs(300))?;
+let upload = storage.temporary_upload_url(&key, Duration::from_secs(120))?;
+let public = Storage::disk("public")?;
+public.url("logo.png");                          // → /storage/logo.png
+```
+
+测试用内存盘：
+
+```rust
+let photos = Storage::fake("photos");
+photos.put("a.png", b"ok")?;
+photos.assert_exists("a.png");
+```
+
+图片（本地 `image` crate，png/jpeg/gif/webp）：
+
+```rust
+storage.image("shot.png")?.cover(400, 400)?.to_webp(80)?.save()?;
+```
+
+- `StorageError`：策略/键/只读 → 4xx；I/O → 带 source 的 500（见 [ERRORS.md](./ERRORS.md)）。
+- 公开文件：`GET /storage/*path` 读 `public` disk；私有 disk 的 GET/PUT 必须带 HMAC `expires`+`signature`（签名 PUT 免 CSRF）。
+- `nx storage link` / `unlink`：按 `[storage.links]` 建符号链接（默认 `public/storage` → `storage/app/public`）。
+- S3 / FTP / SFTP **不内置协议 crate**。写 `Storage::extend("s3", |cfg| { … })` 再在 toml 里 `driver = "s3"`。S3 仍可用 `S3CompatibleStorage<T: S3Transport>`。
+- 包装：`storage.scoped("avatars")?`、`storage.read_only()`，或 toml `driver = "scoped"|"readonly"`。
+- `UploadedFile` 没有 `.store()`：用 `Storage::put_file` / `put_file_as`（`namix-http` 不反向依赖门面）。
 
 ---
 
@@ -196,5 +241,6 @@ nx make job SendDigest
 nx make mail Welcome
 nx make notification InvoicePaid
 nx make test posts_update_forbidden
+nx storage link          # public/storage → storage/app/public
 nx clean                 # 删 target / node_modules / public/build
 ```

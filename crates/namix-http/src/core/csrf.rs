@@ -34,6 +34,9 @@ pub struct CsrfConfig {
     /// request `Host` header is used and both HTTP and HTTPS are accepted.
     pub trusted_origins: Vec<String>,
     pub secure_cookie: bool,
+    /// Path prefixes whose signed (`expires` + `signature`) mutations skip CSRF.
+    /// Unsigned PUTs on the same paths stay protected.
+    pub except_prefixes: Vec<String>,
 }
 
 impl Default for CsrfConfig {
@@ -45,6 +48,7 @@ impl Default for CsrfConfig {
             form_field: "_csrf".into(),
             trusted_origins: Vec::new(),
             secure_cookie: false,
+            except_prefixes: Vec::new(),
         }
     }
 }
@@ -145,6 +149,10 @@ fn requires_protection(req: &Request, config: &CsrfConfig) -> bool {
         return false;
     }
 
+    if signed_prefix_exempt(req, config) {
+        return false;
+    }
+
     // Token-authenticated, cookie-free API clients do not share browser
     // cookies and must remain usable without first visiting a HTML page.
     let bearer_only = req.bearer().is_some() && req.header("cookie").is_none();
@@ -158,6 +166,25 @@ fn requires_protection(req: &Request, config: &CsrfConfig) -> bool {
         || req.header("sec-fetch-site").is_some()
         || req.cookie(&config.cookie_name).is_some()
         || req.cookie("namix_session").is_some()
+}
+
+fn signed_prefix_exempt(req: &Request, config: &CsrfConfig) -> bool {
+    if config.except_prefixes.is_empty() {
+        return false;
+    }
+    let path = req.path();
+    let matched = config.except_prefixes.iter().any(|prefix| {
+        let prefix = prefix.trim_end_matches('/');
+        if prefix.is_empty() {
+            return false;
+        }
+        path == prefix || path.starts_with(&format!("{prefix}/"))
+    });
+    matched
+        && req.query("expires").is_some_and(|value| !value.is_empty())
+        && req
+            .query("signature")
+            .is_some_and(|value| !value.is_empty())
 }
 
 fn origin_allowed(req: &Request, config: &CsrfConfig) -> bool {
@@ -461,5 +488,28 @@ mod tests {
         assert_eq!(request.csrf_token(), "");
         request.set(CsrfToken("tok-1".into()));
         assert_eq!(request.csrf_token(), "tok-1");
+    }
+
+    #[tokio::test]
+    async fn signed_storage_put_skips_csrf_on_except_prefixes() {
+        let config = CsrfConfig {
+            except_prefixes: vec!["/storage".into()],
+            ..CsrfConfig::default()
+        };
+        let guard = CsrfProtection::new(config);
+        let request = Request::new(
+            Method::PUT,
+            Uri::from_static("/storage/a.png?expires=1&signature=abc"),
+            {
+                let mut map = HeaderMap::new();
+                map.insert("host", HeaderValue::from_static("app.test"));
+                map.insert("origin", HeaderValue::from_static("https://evil.test"));
+                map.insert("cookie", HeaderValue::from_static("namix_csrf=tok"));
+                map
+            },
+            Bytes::from_static(b"file"),
+        );
+        let response = guard.handle(request, terminal()).await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

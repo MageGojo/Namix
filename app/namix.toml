@@ -87,6 +87,24 @@ trusted_proxies = []
 # 生产由 Caddy/Nginx/负载均衡终止 TLS 时设为 true；此时应用仅绑定私网/loopback。
 tls_terminated_by_proxy = false
 
+[storage]
+default = "local"
+
+[storage.disks.local]
+driver = "local"
+root = "./storage/app"
+url = "/storage/private"
+visibility = "private"
+
+[storage.disks.public]
+driver = "local"
+root = "./storage/app/public"
+url = "/storage"
+visibility = "public"
+
+[storage.links]
+"public/storage" = "storage/app/public"
+
 [security.rate_limit]
 enabled = true
 window_seconds = 60

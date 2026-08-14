@@ -7,7 +7,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| [Features 开关](./FEATURES.md) | `nx new` lean 默认；`[features]` / Cargo / database / session / mail / sms 全表与打开步骤 |
+| [Features 开关](./FEATURES.md) | `nx new` lean 默认；`[features]` / Cargo / database / session / storage / mail / sms 全表与打开步骤 |
 | [控制器](./01-controllers.md) | Request / Response、页面渲染、`#[server]`、提取器、闪存跳转、登出 / 密码重置、零授权 props |
 | [路由](./02-routes.md) | `web.rs` 注册、命名路由、`resource`、中间件、Boot 自动挂载 |
 | [验证器](./03-validators.md) | FormField / FormRequest、规则、两种失败出口 |
@@ -96,3 +96,4 @@ app/src/
 | `Mail::` / `Notification` | `Mail` / `Sms` 门面；见 [09](./09-mail-sms.md) |
 | `Event::dispatch` / Listener | `dispatch` / `listen`；见 [10](./10-events.md) |
 | `Crypt::encrypt` | `namix::Crypt`；见 [11](./11-jwt-crypt.md) |
+| `Storage::disk` / `Storage::fake` / `storage:link` | `Storage::disk("public")` / `Storage::fake` / `nx storage link`；见 [08 §5](./08-platform.md#5-storage) |

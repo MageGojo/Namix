@@ -11,6 +11,7 @@ mod migrate;
 mod project;
 mod release;
 mod scope;
+mod storage;
 mod template;
 mod ui;
 
@@ -50,6 +51,7 @@ nx start -p 3000         # 生产启动 dist/current（共享 data/）\n  \
 nx update --build        # 热更新：编新版 → 重叠接流 → 旧进程排水\n  \
 nx stop / nx status\n  \
 nx doctor [--check]\n  \
+nx storage link              # public/storage → storage/app/public\n  \
 nx clean                 # 删 target / node_modules / public/build\n  \
 nx clean -n              # 只看将删什么（cleen/clen 等拼写也能用）\n  \
 nx completion zsh > _nx"
@@ -218,6 +220,11 @@ enum Commands {
         #[arg(long)]
         compile: bool,
     },
+    /// 文件存储：public disk 符号链接（Laravel `storage:link`）
+    Storage {
+        #[command(subcommand)]
+        cmd: StorageCmd,
+    },
     /// 删除 target、node_modules、Vite 产物等可再生目录
     #[command(
         visible_alias = "cleen",
@@ -313,6 +320,14 @@ enum MigrateCmd {
 enum ExportCmd {
     /// 从 storage/routes.json 生成 storage/routes.ts（Ziggy 风格 route()）
     Routes,
+}
+
+#[derive(Subcommand)]
+enum StorageCmd {
+    /// 创建 `public/storage` → `storage/app/public`（或 `[storage.links]`）
+    Link,
+    /// 删除 public disk 符号链接
+    Unlink,
 }
 
 #[tokio::main]
@@ -492,12 +507,21 @@ async fn main() -> ExitCode {
         })),
         Some(Commands::Doctor { check }) => finish(run_doctor(check)),
         Some(Commands::Check { compile }) => finish(run_doctor(compile)),
+        Some(Commands::Storage { cmd }) => finish(run_storage(cmd)),
         Some(Commands::Clean { dry_run }) => finish(run_clean(dry_run)),
     }
 }
 
 fn run_clean(dry_run: bool) -> Result<(), String> {
     clean::run(&project::discover()?, dry_run)
+}
+
+fn run_storage(cmd: StorageCmd) -> Result<(), String> {
+    let project = project::discover()?;
+    match cmd {
+        StorageCmd::Link => storage::link(&project),
+        StorageCmd::Unlink => storage::unlink(&project),
+    }
 }
 
 struct UpdateCli {

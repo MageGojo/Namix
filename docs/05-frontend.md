@@ -386,6 +386,7 @@ setTheme('dark') // cookie `namix_theme` + `data-theme="dark"`
 
 - 图片等：**Vite `import logo from '../assets/x.svg?url'`**，不要写死 `/build/assets/xxx.svg`（哈希会变；小 SVG 可能被内联成 data URL）。
 - 生产静态默认挂在 `/build/*`，由 Namix 按 Vite manifest 提供。
+- **用户上传**（头像、附件）不是 Vite 资源：走 `Storage::disk`。`public` disk 的 URL 是 `/storage/…`（`nx storage link` 把 `public/storage` 链到 `storage/app/public`）。私有文件不要挂公开 URL，用控制器读盘或 `temporary_url`。见 [08 §5](./08-platform.md#5-storage)。
 - **子路径挂载**（应用对外入口是 `/lr` 等、反代只转发该前缀）：运行时与构建都设同一前缀，否则 JS 404 白屏：
   - 运行：`NAMIX_ASSET_PREFIX=/lr`（或 `NAMIX_ASSET_BASE=/lr/build`）
   - 构建：同上环境变量（脚手架 `vite.config` 已读）；磁盘仍是 `public/build/`

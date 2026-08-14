@@ -77,8 +77,8 @@ pub use cache::{
     Cache, CacheError, CacheResult, CacheStore, MemoryCache, RedisBackend, RedisCache,
 };
 pub use config::{
-    ConfigError, I18nSection, MailSection, NamixToml, QueueSection, RateLimitSection,
-    SecuritySection, SessionSection, SmsSection,
+    ConfigError, DiskConfig, I18nSection, MailSection, NamixToml, QueueSection, RateLimitSection,
+    SecuritySection, SessionSection, SmsSection, StorageSection,
 };
 pub use crypt::{Crypt, CryptError};
 pub use event::{
@@ -118,8 +118,9 @@ pub use sms::{
     Sms, SmsError, SmsMessage, SmsResult, SmsTransport, SmsTransportError, SmsTransportResult,
 };
 pub use storage::{
-    LocalStorage, S3CompatibleStorage, S3Transport, Storage, StorageDriver, StorageError,
-    StorageResult, TemporaryUrl, UploadPolicy,
+    LocalStorage, MemoryStorage, ReadOnlyStorage, S3CompatibleStorage, S3Transport, ScopedStorage,
+    Storage, StorageDriver, StorageError, StorageImage, StorageResult, TemporaryUrl, UploadPolicy,
+    Visibility,
 };
 
 pub mod prelude {
@@ -151,8 +152,8 @@ pub mod prelude {
         Respond, Response, Route, Router, Server, Session, Sms, SmsError, SmsMessage, SmsResult,
         Sse, SseEvent, SseSender, Storage, StorageError, StorageResult, TestClient,
         TestClientError, TestClientResult, TestResponse, TestWebSocket, TlsConfig, TrustedProxies,
-        TrustedProxyError, UploadPolicy, UploadProgress, UploadedFile, WsMessage, WsReceiver,
-        WsSender, WsSocket, authorize, dispatch_job, dispatch_job_later, is_local_path,
+        TrustedProxyError, UploadPolicy, UploadProgress, UploadedFile, Visibility, WsMessage,
+        WsReceiver, WsSender, WsSocket, authorize, dispatch_job, dispatch_job_later, is_local_path,
         register_job, resource, resources, route, route_names, routes, server, trans, trans_error,
         trans_with,
     };

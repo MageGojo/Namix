@@ -18,7 +18,7 @@
 1. **资源路由**：提供 `resource("posts", PostsController)` 或等价 Rust DSL，生成 index/create/store/show/edit/update/destroy 路由与命名。
 2. **分页与查询参数**：标准 `Paginator<T>`、安全排序/过滤白名单、TS 类型同步。
 3. **缓存与后台任务**：本地实现起步，抽象 Redis/队列后端；事件监听器可选择同步或排队。
-4. **邮件、通知与文件存储抽象**：开发日志驱动 + 可替换生产驱动。
+4. **邮件、通知与文件存储抽象**：开发日志驱动 + 可替换生产驱动。Storage 命名磁盘 / fake / `nx storage link` 已补（2026-08-14）；S3 SDK 与真 SMTP 仍不内置。
 5. **策略与 Gate**：为模型/资源定义 `can`/`authorize`，减少控制器里散落的角色判断。
 
 验收：资源路由、分页/白名单排序、Policy/Gate、内存 Cache/Queue、Storage 已提供统一 API；`nx make` 支持 resource、policy、job、mail、notification、test。

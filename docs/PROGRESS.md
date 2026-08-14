@@ -162,6 +162,10 @@
 
 不提供 `Http::get` 门面。服务器里用业务包 `reqwest` + `services/`；`#[server]` 只把展示 DTO 放进 `ActionOk`。文档：[08-platform §7](./08-platform.md#7-出站-http-调第三方)、[01-controllers](./01-controllers.md)。
 
+## 2026-08-14：Storage 命名磁盘
+
+补齐 Laravel Filesystem 常用面：`[storage]` disks、`Storage::disk` / `default_disk` / `fake`、`exists`/`copy`/`files`/`put_file`、visibility、scoped/read-only、HMAC 临时下载/上传 URL、公开 `GET /storage/*`、`nx storage link`、本地 `cover`/`to_webp`。示例头像改走 `Storage::disk("local")`。S3/FTP/SFTP 仍用 `Storage::extend`，不内置 AWS SDK。文档：[08-platform §5](./08-platform.md#5-storage)、[FEATURES §6.2](./FEATURES.md)。
+
 ## 2026-08-14：DX 下一刀写进路线图
 
 功能面暂收口。下一阶段按写页面手感排（编译期 `routes.ts`、带参路由、`Link`、表单合一、校验码、Action TS），不堆 SMTP/OAuth/Redis。见 [`NEXT.md`](./NEXT.md) DX 节、[`DECISIONS.md`](./DECISIONS.md)。

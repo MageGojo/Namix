@@ -3,7 +3,7 @@
 `nx new` **默认 lean**：只有 **controllers**、**routes**、**middleware**，以及 **views**（`[features].pages = true`）。  
 其余能力全部关掉，用 `namix.toml` 与 `Cargo.toml` 按需打开。仓库内示例 `app/` 为完整业务面，可对照本页逐项对照。
 
-本文覆盖全部可文档化的开关：目录 feature、Cargo feature、数据库、会话、邮件、短信、安全与 Action 密封。不含「以后再写」的占位描述。
+本文覆盖全部可文档化的开关：目录 feature、Cargo feature、数据库、会话、文件存储、邮件、短信、安全与 Action 密封。不含「以后再写」的占位描述。
 
 ---
 
@@ -13,7 +13,7 @@
 |----|------|------|
 | 目录 / 构建 | `app/namix.toml` → `[features]` | `namix-build` 创建或删除带 `.namix-feature` 的目录，并生成 `namix_modules.rs` / 视图注册表 |
 | 编译体积 | `app/Cargo.toml` → `namix = { features = [...] }` | 编进 Toasty 驱动、`req.view` 等可选代码 |
-| 运行时 | `namix.toml` 其它段（`[database]` / `[session]` / `[mail]` / `[sms]` / `[security]`） | Boot 是否连库、会话驱动、邮件/短信驱动、生产约束 |
+| 运行时 | `namix.toml` 其它段（`[database]` / `[session]` / `[storage]` / `[mail]` / `[sms]` / `[security]`） | Boot 是否连库、会话驱动、命名磁盘、邮件/短信驱动、生产约束 |
 
 规则：
 
@@ -178,6 +178,32 @@ path = "./lang"
 
 ---
 
+## 6.2 文件存储 `[storage]`
+
+```toml
+[storage]
+default = "local"
+
+[storage.disks.local]
+driver = "local"
+root = "./storage/app"
+url = "/storage/private"
+visibility = "private"
+
+[storage.disks.public]
+driver = "local"
+root = "./storage/app/public"
+url = "/storage"
+visibility = "public"
+
+[storage.links]
+"public/storage" = "storage/app/public"
+```
+
+空 `disks` 时 Boot 仍安装上述两个默认盘。业务侧：`Storage::disk("local")?` / `Storage::default_disk()?`。公开文件走 `GET /storage/*`；`nx storage link` 建 `public/storage` 符号链接。S3/FTP/SFTP 用 `Storage::extend`，不内置协议包。详见 [08-platform.md §5](./08-platform.md#5-storage)。
+
+---
+
 ## 7. 安全 `[security]`
 
 ```toml
@@ -249,6 +275,7 @@ nx seed
 | `nx export routes` | 是 | 需先跑过后端写出 `storage/routes.*` |
 | `nx doctor` | 是 | lean 不强制 DB/registry；`--check` 跑 `cargo check` |
 | `nx clean` | 是 | 删 `target/`、`node_modules/`、`public/build`；`nx cleen` 等拼写也能用 |
+| `nx storage link` / `unlink` | 是 | 按 `[storage.links]` 建/删 `public/storage` 符号链接；不依赖 feature |
 | `nx dev` / `build` / `start` / `update` / `stop` / `status` | 是 | 生产滚动更新需共享 session（file/redis） |
 | `nx completion` | 是 | 与 feature 无关 |
 

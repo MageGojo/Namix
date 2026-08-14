@@ -73,4 +73,8 @@ Cookie 签名留在应用边界；会话记录通过框架 `SessionStore` 持久
 
 Laravel 式能力（校验 unique、队列、角色、邮件验证、i18n、后台表）第一版已落地。再接真 SMTP / 真 OAuth / 更重后台套件，对「每天写一个页面」帮助很小。
 
-下一刀优先缩短 **Rust 写完 → TSX 能点、类型能对上** 这一圈：编译期 `views/routes.ts`、带参路由类型、`Link` 吃命名路由、表单 JSON/文件同一套、`ActionOk<T>` 进 TS。校验稳定码已落地（`username.taken` + `lang/*.json`）。不引入 Redis。完整排序见 [NEXT.md](./NEXT.md) DX 节。
+下一刀优先缩短 **Rust 写完 → TSX 能点、类型能对上** 这一圈：编译期 `views/routes.ts`、带参路由类型、`Link` 吃命名路由、表单 JSON/文件同一套、`ActionOk<T>` 进 TS。校验稳定码已落地（`username.taken` + `lang/*.json`）。文件存储命名磁盘已补齐，见 [`08-platform.md`](./08-platform.md) §5。不引入 Redis。完整排序见 [NEXT.md](./NEXT.md) DX 节。
+
+## 2026-08-14：Storage 对标 Filesystem，不内置对象存储 SDK
+
+`Storage::disk` / `fake` / `nx storage link` 走 `[storage]` 配置。本地盘防路径穿越与符号链接、HMAC 临时 URL。S3 只保留 `S3Transport` 口子；FTP/SFTP 用 `Storage::extend`。不把 AWS SDK 或 ftp crate 编进框架默认依赖。

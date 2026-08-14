@@ -74,7 +74,10 @@ pub async fn save(req: Request, user: AuthUser, form: ProfileRequest) -> Respons
         let ext = avatar.extension().to_ascii_lowercase();
         let ext = if ext.is_empty() { "png".into() } else { ext };
         let key = format!("avatars/{}.{}", user.id, ext);
-        let storage = namix::Storage::new(namix::LocalStorage::new("./storage/app", "/me/avatar"));
+        let storage = match namix::Storage::disk("local") {
+            Ok(storage) => storage,
+            Err(error) => return req.redirect_error_to(AppRoute::Me, error.to_string()),
+        };
         let policy = UploadPolicy {
             max_bytes: 2_000_000,
             allowed_extensions: vec!["png".into(), "jpg".into(), "jpeg".into(), "webp".into(), "gif".into()],
@@ -99,7 +102,10 @@ pub async fn avatar(req: Request, user: AuthUser) -> Response {
     if profile.avatar_path.is_empty() {
         return req.not_found();
     }
-    let storage = namix::Storage::new(namix::LocalStorage::new("./storage/app", "/me/avatar"));
+    let storage = match namix::Storage::disk("local") {
+        Ok(storage) => storage,
+        Err(_) => return req.not_found(),
+    };
     match storage.get(&profile.avatar_path) {
         Ok(Some(bytes)) => {
             let ct = ContentType::from_path(&profile.avatar_path);

@@ -209,6 +209,7 @@ Rule::MaxBytes(2_000_000),
 - unique / exists 走 `PresenceVerifier`（SQLite 在 Boot 连库后自动安装）。空值跳过。
 - 文件字段走经典 `multipart/form-data` + `<CsrfField />`（`#[server]` / `useForm` 仍是 JSON，不带文件）。
 - `Validated::file_field(ProfileForm::Avatar)` 取出 `UploadedFile`。
+- 落盘用 `Storage::disk("local")?.put_file("avatars", &file)` 或 `put_with_policy`；`UploadedFile` **没有** Laravel 式 `.store()`（避免 `namix-http` 反向依赖门面）。公开文件走 `public` disk，见 [08 §5](./08-platform.md#5-storage)。
 - 失败返回稳定码（`username.taken`、`email.required`），不是英文句子。改 `Min(3)` 只动 `lang/*.json` 里的 `username.min` / `validation.min`，前端不必跟句子。
 - `trans_error` / `t()` 查找：精确键 → `validation.{rule}`（`:attribute` 可用 `attributes.username` 换成「用户名」）。
 - `useForm.messages` 按码覆盖特例。

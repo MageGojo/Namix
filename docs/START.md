@@ -137,7 +137,7 @@ import { Link, route, AppRoute } from '../namix'
 - 路由细节、中间件、resource：[02-routes.md](./02-routes.md)
 - 控制器与 `req.view`：[01-controllers.md](./01-controllers.md)
 - 前端 `useForm` / `Link`：[05-frontend.md](./05-frontend.md)
-- 校验 unique / 文件：[03-validators.md](./03-validators.md)
+- 校验 unique / 文件：[03-validators.md](./03-validators.md)（落盘见 [08 §5 Storage](./08-platform.md#5-storage)）
 - 邮件验证 + `nx work`：[09-mail-sms.md](./09-mail-sms.md) / [08-platform.md](./08-platform.md)
 - 清构建缓存：`nx clean`（`target` / `node_modules` / `public/build`；`-n` 只预览）
 - 下一刀（编译期路由、表单合一）：[NEXT.md](./NEXT.md) DX 节

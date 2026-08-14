@@ -36,6 +36,8 @@ pub struct NamixToml {
     #[serde(default)]
     pub i18n: I18nSection,
     #[serde(default)]
+    pub storage: StorageSection,
+    #[serde(default)]
     pub security: SecuritySection,
     #[serde(default)]
     pub session: SessionSection,
@@ -405,6 +407,80 @@ fn default_i18n_locale() -> String {
 }
 fn default_i18n_path() -> String {
     "./lang".into()
+}
+
+/// `[storage]` — named disks (Laravel `filesystems.php`).
+///
+/// Empty `disks` installs `local` (`./storage/app`, private) and `public`
+/// (`./storage/app/public`, `/storage`). FTP/SFTP/S3 are registered with
+/// [`crate::Storage::extend`], not built-in protocol crates.
+///
+/// ```toml
+/// [storage]
+/// default = "local"
+///
+/// [storage.disks.local]
+/// driver = "local"
+/// root = "./storage/app"
+/// url = "/storage/private"
+/// visibility = "private"
+///
+/// [storage.disks.public]
+/// driver = "local"
+/// root = "./storage/app/public"
+/// url = "/storage"
+/// visibility = "public"
+///
+/// [storage.links]
+/// "public/storage" = "storage/app/public"
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct StorageSection {
+    #[serde(default = "default_storage_disk")]
+    pub default: String,
+    #[serde(default)]
+    pub disks: BTreeMap<String, DiskConfig>,
+    #[serde(default)]
+    pub links: BTreeMap<String, String>,
+}
+
+impl Default for StorageSection {
+    fn default() -> Self {
+        Self {
+            default: default_storage_disk(),
+            disks: BTreeMap::new(),
+            links: BTreeMap::new(),
+        }
+    }
+}
+
+fn default_storage_disk() -> String {
+    "local".into()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DiskConfig {
+    #[serde(default = "default_disk_driver")]
+    pub driver: String,
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub visibility: String,
+    /// Source disk name for `scoped` / `readonly` wrappers.
+    #[serde(default)]
+    pub disk: String,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub bucket: String,
+    #[serde(default)]
+    pub endpoint: String,
+}
+
+fn default_disk_driver() -> String {
+    "local".into()
 }
 
 /// `[database]` — Toasty 连接与开发期 schema。

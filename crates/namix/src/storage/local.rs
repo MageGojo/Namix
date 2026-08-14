@@ -1,11 +1,10 @@
-//! File-storage abstraction with local-disk and S3-compatible URL contracts.
+//! Local disk driver: traversal-safe, atomic writes, HMAC temporary URLs.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use rand::RngCore as _;
 use rand::rngs::OsRng;
-use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::ffi::OsString;
 use std::fmt;
@@ -13,191 +12,25 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use thiserror::Error;
+use std::time::{Duration, SystemTime};
 
-const MIN_SIGNING_KEY_BYTES: usize = 32;
+use super::{
+    MIN_SIGNING_KEY_BYTES, StorageDriver, StorageError, StorageResult, TemporaryUrl, Visibility,
+    encode_url_path, epoch_seconds, normalize_key,
+};
+
 const TEMPORARY_URL_SIGNATURE_CONTEXT: &[u8] = b"namix-local-storage-url-v1\0";
+const TEMPORARY_UPLOAD_SIGNATURE_CONTEXT: &[u8] = b"namix-local-storage-upload-v1\0";
 const ATOMIC_WRITE_ATTEMPTS: usize = 32;
 
 type HmacSha256 = Hmac<Sha256>;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TemporaryUrl {
-    pub url: String,
-    pub expires_at: u64,
-}
-
-/// Storage errors keep the operation and the underlying I/O source intact.
-/// Callers can map invalid keys, signatures, and upload-policy variants to a
-/// 4xx response, while I/O/backend/configuration failures become a logged
-/// [`crate::AppError::internal`] error.
-#[derive(Debug, Error)]
-pub enum StorageError {
-    #[error("invalid storage key")]
-    InvalidKey,
-    #[error("upload exceeds {max_bytes} bytes")]
-    UploadTooLarge { max_bytes: usize },
-    #[error("upload extension is not allowed")]
-    ExtensionNotAllowed,
-    #[error("temporary URL signature is invalid")]
-    InvalidTemporaryUrlSignature,
-    #[error("temporary URL expired at {expires_at}")]
-    TemporaryUrlExpired { expires_at: u64 },
-    #[error("storage signing key must contain at least {min_bytes} bytes")]
-    SigningKeyTooShort { min_bytes: usize },
-    #[error("temporary URL expiration exceeds the supported timestamp range")]
-    ExpirationOverflow,
-    #[error("this storage driver delegates temporary URL verification to its backend")]
-    TemporaryUrlVerificationUnsupported,
-    #[error("storage I/O failed")]
-    Io(#[source] std::io::Error),
-    #[error("storage clock failed")]
-    Clock(#[source] std::time::SystemTimeError),
-    #[error("storage backend failed: {message}")]
-    Backend { message: String },
-}
-
-pub type StorageResult<T> = Result<T, StorageError>;
-
-impl StorageError {
-    /// Use this adapter for SDKs whose error type is not available in the
-    /// framework dependency graph. Native framework drivers should preserve
-    /// the concrete source with a dedicated variant instead.
-    pub fn backend(message: impl Into<String>) -> Self {
-        Self::Backend {
-            message: message.into(),
-        }
-    }
-}
-
-impl From<StorageError> for crate::AppError {
-    fn from(error: StorageError) -> Self {
-        match error {
-            StorageError::InvalidKey => Self::bad_request("invalid storage key"),
-            StorageError::UploadTooLarge { max_bytes } => {
-                Self::validation("file", format!("upload exceeds {max_bytes} bytes"))
-            }
-            StorageError::ExtensionNotAllowed => {
-                Self::validation("file", "upload extension is not allowed")
-            }
-            StorageError::InvalidTemporaryUrlSignature
-            | StorageError::TemporaryUrlExpired { .. } => Self::Forbidden,
-            other => Self::internal(other),
-        }
-    }
-}
-
-/// Enforced before a file reaches any storage driver.
-#[derive(Clone, Debug)]
-pub struct UploadPolicy {
-    pub max_bytes: usize,
-    pub allowed_extensions: Vec<String>,
-}
-
-impl UploadPolicy {
-    pub fn validate(&self, key: &str, bytes: &[u8]) -> StorageResult<()> {
-        if bytes.len() > self.max_bytes {
-            return Err(StorageError::UploadTooLarge {
-                max_bytes: self.max_bytes,
-            });
-        }
-        if !self.allowed_extensions.is_empty() {
-            let extension = Path::new(key)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if !self.allowed_extensions.iter().any(|allowed| {
-                allowed
-                    .trim_start_matches('.')
-                    .eq_ignore_ascii_case(extension)
-            }) {
-                return Err(StorageError::ExtensionNotAllowed);
-            }
-        }
-        Ok(())
-    }
-}
-
-pub trait StorageDriver: Send + Sync + 'static {
-    fn put(&self, key: &str, bytes: &[u8]) -> StorageResult<()>;
-    fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>>;
-    fn delete(&self, key: &str) -> StorageResult<()>;
-    fn url(&self, key: &str) -> String;
-    fn temporary_url(&self, key: &str, ttl: Duration) -> StorageResult<TemporaryUrl>;
-
-    /// Verify the `expires` and `signature` query values produced by
-    /// [`StorageDriver::temporary_url`]. Drivers such as S3 that validate the
-    /// signature at the object backend keep the default result.
-    fn verify_temporary_url(
-        &self,
-        _key: &str,
-        _expires_at: u64,
-        _signature: &str,
-    ) -> StorageResult<()> {
-        Err(StorageError::TemporaryUrlVerificationUnsupported)
-    }
-}
-
-#[derive(Clone)]
-pub struct Storage {
-    driver: Arc<dyn StorageDriver>,
-}
-
-impl Storage {
-    pub fn new(driver: impl StorageDriver) -> Self {
-        Self {
-            driver: Arc::new(driver),
-        }
-    }
-
-    pub fn put(&self, key: &str, bytes: &[u8]) -> StorageResult<()> {
-        self.driver.put(key, bytes)
-    }
-
-    pub fn put_with_policy(
-        &self,
-        key: &str,
-        bytes: &[u8],
-        policy: &UploadPolicy,
-    ) -> StorageResult<()> {
-        policy.validate(key, bytes)?;
-        self.put(key, bytes)
-    }
-
-    pub fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
-        self.driver.get(key)
-    }
-
-    pub fn delete(&self, key: &str) -> StorageResult<()> {
-        self.driver.delete(key)
-    }
-
-    pub fn url(&self, key: &str) -> String {
-        self.driver.url(key)
-    }
-
-    pub fn temporary_url(&self, key: &str, ttl: Duration) -> StorageResult<TemporaryUrl> {
-        self.driver.temporary_url(key, ttl)
-    }
-
-    /// Verify a local temporary URL after the router has extracted its storage
-    /// key and the `expires`/`signature` query values.
-    pub fn verify_temporary_url(
-        &self,
-        key: &str,
-        expires_at: u64,
-        signature: &str,
-    ) -> StorageResult<()> {
-        self.driver.verify_temporary_url(key, expires_at, signature)
-    }
-}
 
 #[derive(Clone)]
 pub struct LocalStorage {
     root: PathBuf,
     public_base: String,
     signing_key: Arc<[u8]>,
+    visibility: Visibility,
 }
 
 impl fmt::Debug for LocalStorage {
@@ -206,6 +39,7 @@ impl fmt::Debug for LocalStorage {
             .debug_struct("LocalStorage")
             .field("root", &self.root)
             .field("public_base", &self.public_base)
+            .field("visibility", &self.visibility)
             .field("signing_key", &"[REDACTED]")
             .finish()
     }
@@ -222,7 +56,7 @@ impl LocalStorage {
     pub fn new(root: impl Into<PathBuf>, public_base: impl Into<String>) -> Self {
         let mut signing_key = [0_u8; MIN_SIGNING_KEY_BYTES];
         OsRng.fill_bytes(&mut signing_key);
-        Self::from_signing_key(root, public_base, &signing_key)
+        Self::from_signing_key(root, public_base, &signing_key, Visibility::Private)
     }
 
     /// Create a local driver with an explicit temporary-URL signing key.
@@ -241,36 +75,34 @@ impl LocalStorage {
                 min_bytes: MIN_SIGNING_KEY_BYTES,
             });
         }
-        Ok(Self::from_signing_key(root, public_base, signing_key))
+        Ok(Self::from_signing_key(
+            root,
+            public_base,
+            signing_key,
+            Visibility::Private,
+        ))
+    }
+
+    pub fn with_visibility(self, visibility: Visibility) -> Self {
+        Self { visibility, ..self }
     }
 
     fn from_signing_key(
         root: impl Into<PathBuf>,
         public_base: impl Into<String>,
         signing_key: &[u8],
+        visibility: Visibility,
     ) -> Self {
         Self {
             root: root.into(),
             public_base: public_base.into().trim_end_matches('/').into(),
             signing_key: Arc::from(signing_key),
+            visibility,
         }
     }
 
     fn relative_path(key: &str) -> StorageResult<PathBuf> {
-        // Storage keys are portable URL-style paths, not platform-native paths.
-        // A strict canonical spelling also prevents signature aliases such as
-        // `a/../b`, `a//b`, or `./b`.
-        if key.is_empty()
-            || key.starts_with('/')
-            || key.contains('\0')
-            || key.contains('\\')
-            || key
-                .split('/')
-                .any(|component| component.is_empty() || matches!(component, "." | ".."))
-        {
-            return Err(StorageError::InvalidKey);
-        }
-
+        let key = normalize_key(key)?;
         let path = Path::new(key);
         if path.is_absolute()
             || path.components().any(|component| {
@@ -284,6 +116,13 @@ impl LocalStorage {
             return Err(StorageError::InvalidKey);
         }
         Ok(path.to_path_buf())
+    }
+
+    fn relative_prefix(prefix: &str) -> StorageResult<PathBuf> {
+        if prefix.is_empty() {
+            return Ok(PathBuf::new());
+        }
+        Self::relative_path(prefix)
     }
 
     /// Resolve the root itself, intentionally following a release-managed root
@@ -350,6 +189,19 @@ impl LocalStorage {
         }
     }
 
+    fn checked_directory_path(&self, key: &str) -> StorageResult<PathBuf> {
+        let relative = Self::relative_path(key)?;
+        let mut current = self.root_for_write()?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(StorageError::InvalidKey);
+            };
+            current.push(name);
+            Self::ensure_safe_directory(&current)?;
+        }
+        Ok(current)
+    }
+
     fn ensure_safe_directory(path: &Path) -> StorageResult<()> {
         match fs::symlink_metadata(path) {
             Ok(metadata) => Self::validate_descendant_directory(metadata),
@@ -410,14 +262,182 @@ impl LocalStorage {
         Ok(Some(current))
     }
 
-    fn signature(&self, key: &str, expires_at: u64) -> String {
+    fn key_from_path(root: &Path, path: &Path) -> StorageResult<String> {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| StorageError::InvalidKey)?;
+        let mut key = String::new();
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(StorageError::InvalidKey);
+            };
+            let name = name.to_str().ok_or(StorageError::InvalidKey)?;
+            if !key.is_empty() {
+                key.push('/');
+            }
+            key.push_str(name);
+        }
+        Ok(key)
+    }
+
+    fn list(
+        &self,
+        prefix: &str,
+        recursive: bool,
+        want_files: bool,
+        want_dirs: bool,
+    ) -> StorageResult<Vec<String>> {
+        Self::relative_prefix(prefix)?;
+        let Some(root) = self.root_if_exists()? else {
+            return Ok(Vec::new());
+        };
+        let start = if prefix.is_empty() {
+            root.clone()
+        } else {
+            match self.checked_existing_path(prefix)? {
+                Some(path) => path,
+                None => return Ok(Vec::new()),
+            }
+        };
+        let metadata = match fs::symlink_metadata(&start) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(StorageError::Io(error)),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(StorageError::InvalidKey);
+        }
+        if !metadata.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        self.walk(&root, &start, recursive, want_files, want_dirs, &mut out)?;
+        out.sort();
+        Ok(out)
+    }
+
+    fn walk(
+        &self,
+        root: &Path,
+        dir: &Path,
+        recursive: bool,
+        want_files: bool,
+        want_dirs: bool,
+        out: &mut Vec<String>,
+    ) -> StorageResult<()> {
+        let entries = fs::read_dir(dir).map_err(StorageError::Io)?;
+        for entry in entries {
+            let entry = entry.map_err(StorageError::Io)?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(StorageError::Io)?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            let key = Self::key_from_path(root, &path)?;
+            if metadata.is_dir() {
+                if want_dirs {
+                    out.push(key);
+                }
+                if recursive {
+                    self.walk(root, &path, recursive, want_files, want_dirs, out)?;
+                }
+            } else if metadata.is_file()
+                && want_files
+                && !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".namix-upload-")
+            {
+                out.push(key);
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_tree(path: &Path) -> StorageResult<()> {
+        let metadata = fs::symlink_metadata(path).map_err(StorageError::Io)?;
+        if metadata.file_type().is_symlink() {
+            return Err(StorageError::InvalidKey);
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).map_err(StorageError::Io)? {
+                Self::delete_tree(&entry.map_err(StorageError::Io)?.path())?;
+            }
+            fs::remove_dir(path).map_err(StorageError::Io)
+        } else {
+            fs::remove_file(path).map_err(StorageError::Io)
+        }
+    }
+
+    fn apply_visibility(&self, path: &Path, visibility: Visibility) -> StorageResult<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = match visibility {
+                Visibility::Public => 0o644,
+                Visibility::Private => 0o600,
+            };
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .map_err(StorageError::Io)?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, visibility);
+        }
+        Ok(())
+    }
+
+    fn read_visibility(&self, path: &Path) -> StorageResult<Visibility> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(path)
+                .map_err(StorageError::Io)?
+                .permissions()
+                .mode()
+                & 0o777;
+            if mode & 0o004 != 0 {
+                Ok(Visibility::Public)
+            } else {
+                Ok(Visibility::Private)
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Ok(self.visibility)
+        }
+    }
+
+    fn signature_with(&self, context: &[u8], key: &str, expires_at: u64) -> String {
         let mut mac = HmacSha256::new_from_slice(&self.signing_key)
             .expect("HMAC accepts signing keys of every length");
-        mac.update(TEMPORARY_URL_SIGNATURE_CONTEXT);
+        mac.update(context);
         mac.update(&(key.len() as u64).to_be_bytes());
         mac.update(key.as_bytes());
         mac.update(&expires_at.to_be_bytes());
         URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    }
+
+    fn signed_url(&self, context: &[u8], key: &str, ttl: Duration) -> StorageResult<TemporaryUrl> {
+        normalize_key(key)?;
+        let now = epoch_seconds(SystemTime::now())?;
+        let round_up = u64::from(ttl.subsec_nanos() != 0);
+        let ttl_secs = ttl
+            .as_secs()
+            .checked_add(round_up)
+            .ok_or(StorageError::ExpirationOverflow)?;
+        let expires_at = now
+            .checked_add(ttl_secs)
+            .ok_or(StorageError::ExpirationOverflow)?;
+        let signature = self.signature_with(context, key, expires_at);
+        let url = self.url(key);
+        let separator = if url.contains('?') { '&' } else { '?' };
+        Ok(TemporaryUrl {
+            url: format!("{url}{separator}expires={expires_at}&signature={signature}"),
+            expires_at,
+        })
     }
 
     /// Verify a temporary URL signature against the current system clock.
@@ -432,24 +452,31 @@ impl LocalStorage {
         signature: &str,
     ) -> StorageResult<()> {
         let now = epoch_seconds(SystemTime::now())?;
-        self.verify_temporary_url_at(key, expires_at, signature, now)
+        self.verify_at(
+            TEMPORARY_URL_SIGNATURE_CONTEXT,
+            key,
+            expires_at,
+            signature,
+            now,
+        )
     }
 
-    fn verify_temporary_url_at(
+    fn verify_at(
         &self,
+        context: &[u8],
         key: &str,
         expires_at: u64,
         signature: &str,
         now: u64,
     ) -> StorageResult<()> {
-        Self::relative_path(key)?;
+        normalize_key(key)?;
 
         let supplied_signature = URL_SAFE_NO_PAD
             .decode(signature)
             .map_err(|_| StorageError::InvalidTemporaryUrlSignature)?;
         let mut mac = HmacSha256::new_from_slice(&self.signing_key)
             .expect("HMAC accepts signing keys of every length");
-        mac.update(TEMPORARY_URL_SIGNATURE_CONTEXT);
+        mac.update(context);
         mac.update(&(key.len() as u64).to_be_bytes());
         mac.update(key.as_bytes());
         mac.update(&expires_at.to_be_bytes());
@@ -466,13 +493,21 @@ impl LocalStorage {
 impl StorageDriver for LocalStorage {
     fn put(&self, key: &str, bytes: &[u8]) -> StorageResult<()> {
         let path = self.checked_write_path(key)?;
-        atomic_write(&path, bytes)
+        atomic_write(&path, bytes)?;
+        self.apply_visibility(&path, self.visibility)
     }
 
     fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
         let Some(path) = self.checked_existing_path(key)? else {
             return Ok(None);
         };
+        let metadata = fs::symlink_metadata(&path).map_err(StorageError::Io)?;
+        if metadata.file_type().is_symlink() {
+            return Err(StorageError::InvalidKey);
+        }
+        if !metadata.is_file() {
+            return Ok(None);
+        }
         fs::read(path).map(Some).map_err(StorageError::Io)
     }
 
@@ -480,31 +515,26 @@ impl StorageDriver for LocalStorage {
         let Some(path) = self.checked_existing_path(key)? else {
             return Ok(());
         };
+        let metadata = fs::symlink_metadata(&path).map_err(StorageError::Io)?;
+        if metadata.file_type().is_symlink() {
+            return Err(StorageError::InvalidKey);
+        }
+        if !metadata.is_file() {
+            return Ok(());
+        }
         fs::remove_file(path).map_err(StorageError::Io)
     }
 
     fn url(&self, key: &str) -> String {
-        format!("{}/{}", self.public_base, encode_url_path(key))
+        if self.public_base.is_empty() {
+            encode_url_path(key)
+        } else {
+            format!("{}/{}", self.public_base, encode_url_path(key))
+        }
     }
 
     fn temporary_url(&self, key: &str, ttl: Duration) -> StorageResult<TemporaryUrl> {
-        Self::relative_path(key)?;
-        let now = epoch_seconds(SystemTime::now())?;
-        let round_up = u64::from(ttl.subsec_nanos() != 0);
-        let ttl_secs = ttl
-            .as_secs()
-            .checked_add(round_up)
-            .ok_or(StorageError::ExpirationOverflow)?;
-        let expires_at = now
-            .checked_add(ttl_secs)
-            .ok_or(StorageError::ExpirationOverflow)?;
-        let signature = self.signature(key, expires_at);
-        let url = self.url(key);
-        let separator = if url.contains('?') { '&' } else { '?' };
-        Ok(TemporaryUrl {
-            url: format!("{url}{separator}expires={expires_at}&signature={signature}"),
-            expires_at,
-        })
+        self.signed_url(TEMPORARY_URL_SIGNATURE_CONTEXT, key, ttl)
     }
 
     fn verify_temporary_url(
@@ -514,6 +544,120 @@ impl StorageDriver for LocalStorage {
         signature: &str,
     ) -> StorageResult<()> {
         LocalStorage::verify_temporary_url(self, key, expires_at, signature)
+    }
+
+    fn exists(&self, key: &str) -> StorageResult<bool> {
+        let Some(path) = self.checked_existing_path(key)? else {
+            return Ok(false);
+        };
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(StorageError::Io(error)),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(StorageError::InvalidKey);
+        }
+        Ok(metadata.is_file())
+    }
+
+    fn files(&self, prefix: &str) -> StorageResult<Vec<String>> {
+        self.list(prefix, false, true, false)
+    }
+
+    fn all_files(&self, prefix: &str) -> StorageResult<Vec<String>> {
+        self.list(prefix, true, true, false)
+    }
+
+    fn directories(&self, prefix: &str) -> StorageResult<Vec<String>> {
+        self.list(prefix, false, false, true)
+    }
+
+    fn all_directories(&self, prefix: &str) -> StorageResult<Vec<String>> {
+        self.list(prefix, true, false, true)
+    }
+
+    fn make_directory(&self, prefix: &str) -> StorageResult<()> {
+        self.checked_directory_path(prefix)?;
+        Ok(())
+    }
+
+    fn delete_directory(&self, prefix: &str) -> StorageResult<()> {
+        let Some(path) = self.checked_existing_path(prefix)? else {
+            return Ok(());
+        };
+        let metadata = fs::symlink_metadata(&path).map_err(StorageError::Io)?;
+        if metadata.file_type().is_symlink() {
+            return Err(StorageError::InvalidKey);
+        }
+        if !metadata.is_dir() {
+            return Ok(());
+        }
+        Self::delete_tree(&path)
+    }
+
+    fn size(&self, key: &str) -> StorageResult<u64> {
+        let path = self
+            .checked_existing_path(key)?
+            .ok_or(StorageError::NotFound)?;
+        let metadata = fs::symlink_metadata(&path).map_err(StorageError::Io)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(StorageError::NotFound);
+        }
+        Ok(metadata.len())
+    }
+
+    fn last_modified(&self, key: &str) -> StorageResult<SystemTime> {
+        let path = self
+            .checked_existing_path(key)?
+            .ok_or(StorageError::NotFound)?;
+        fs::metadata(path)
+            .map_err(StorageError::Io)?
+            .modified()
+            .map_err(StorageError::Io)
+    }
+
+    fn path(&self, key: &str) -> StorageResult<PathBuf> {
+        let relative = Self::relative_path(key)?;
+        Ok(self.root.join(relative))
+    }
+
+    fn visibility(&self, key: &str) -> StorageResult<Visibility> {
+        let path = self
+            .checked_existing_path(key)?
+            .ok_or(StorageError::NotFound)?;
+        self.read_visibility(&path)
+    }
+
+    fn set_visibility(&self, key: &str, visibility: Visibility) -> StorageResult<()> {
+        let path = self
+            .checked_existing_path(key)?
+            .ok_or(StorageError::NotFound)?;
+        self.apply_visibility(&path, visibility)
+    }
+
+    fn default_visibility(&self) -> Visibility {
+        self.visibility
+    }
+
+    fn temporary_upload_url(&self, key: &str, ttl: Duration) -> StorageResult<TemporaryUrl> {
+        self.signed_url(TEMPORARY_UPLOAD_SIGNATURE_CONTEXT, key, ttl)
+    }
+
+    fn verify_temporary_upload_url(
+        &self,
+        key: &str,
+        expires_at: u64,
+        signature: &str,
+    ) -> StorageResult<()> {
+        let now = epoch_seconds(SystemTime::now())?;
+        self.verify_at(
+            TEMPORARY_UPLOAD_SIGNATURE_CONTEXT,
+            key,
+            expires_at,
+            signature,
+            now,
+        )
     }
 }
 
@@ -540,7 +684,7 @@ impl Drop for TemporaryFileGuard {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> StorageResult<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> StorageResult<()> {
     let parent = path.parent().ok_or(StorageError::InvalidKey)?;
     let mut random = [0_u8; 16];
 
@@ -575,83 +719,10 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> StorageResult<()> {
     )))
 }
 
-fn epoch_seconds(time: SystemTime) -> StorageResult<u64> {
-    time.duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(StorageError::Clock)
-}
-
-fn encode_url_path(key: &str) -> String {
-    let mut encoded = String::with_capacity(key.len());
-    for byte in key.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
-            encoded.push(char::from(byte));
-        } else {
-            use fmt::Write as _;
-            write!(encoded, "%{byte:02X}").expect("writing to a String cannot fail");
-        }
-    }
-    encoded
-}
-
-/// S3-compatible adapter boundary. Applications supply a concrete transport
-/// (AWS SDK, MinIO, R2, etc.) while controllers keep the same `Storage` API.
-/// S3 presigned URLs remain backend-owned: the object service validates them,
-/// so the local verification method returns `TemporaryUrlVerificationUnsupported`.
-pub trait S3Transport: Send + Sync + 'static {
-    fn put_object(&self, bucket: &str, key: &str, bytes: &[u8]) -> StorageResult<()>;
-    fn get_object(&self, bucket: &str, key: &str) -> StorageResult<Option<Vec<u8>>>;
-    fn delete_object(&self, bucket: &str, key: &str) -> StorageResult<()>;
-    fn presign_get(&self, bucket: &str, key: &str, ttl: Duration) -> StorageResult<TemporaryUrl>;
-}
-
-#[derive(Clone)]
-pub struct S3CompatibleStorage<T> {
-    transport: Arc<T>,
-    bucket: String,
-    endpoint: String,
-}
-
-impl<T: S3Transport> S3CompatibleStorage<T> {
-    pub fn new(transport: T, bucket: impl Into<String>, endpoint: impl Into<String>) -> Self {
-        Self {
-            transport: Arc::new(transport),
-            bucket: bucket.into(),
-            endpoint: endpoint.into().trim_end_matches('/').into(),
-        }
-    }
-}
-
-impl<T: S3Transport> StorageDriver for S3CompatibleStorage<T> {
-    fn put(&self, key: &str, bytes: &[u8]) -> StorageResult<()> {
-        self.transport.put_object(&self.bucket, key, bytes)
-    }
-
-    fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
-        self.transport.get_object(&self.bucket, key)
-    }
-
-    fn delete(&self, key: &str) -> StorageResult<()> {
-        self.transport.delete_object(&self.bucket, key)
-    }
-
-    fn url(&self, key: &str) -> String {
-        format!(
-            "{}/{}/{}",
-            self.endpoint,
-            self.bucket,
-            key.trim_start_matches('/')
-        )
-    }
-
-    fn temporary_url(&self, key: &str, ttl: Duration) -> StorageResult<TemporaryUrl> {
-        self.transport.presign_get(&self.bucket, key, ttl)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::MIN_SIGNING_KEY_BYTES;
 
     fn test_directory(label: &str) -> PathBuf {
         let mut random = [0_u8; 12];
@@ -792,12 +863,28 @@ mod tests {
         let dir = test_directory("expiration");
         let storage = explicit_storage(&dir);
         let expires_at = 10_000;
-        let signature = storage.signature("private/file.txt", expires_at);
+        let signature = storage.signature_with(
+            TEMPORARY_URL_SIGNATURE_CONTEXT,
+            "private/file.txt",
+            expires_at,
+        );
         storage
-            .verify_temporary_url_at("private/file.txt", expires_at, &signature, expires_at - 1)
+            .verify_at(
+                TEMPORARY_URL_SIGNATURE_CONTEXT,
+                "private/file.txt",
+                expires_at,
+                &signature,
+                expires_at - 1,
+            )
             .unwrap();
         assert!(matches!(
-            storage.verify_temporary_url_at("private/file.txt", expires_at, &signature, expires_at),
+            storage.verify_at(
+                TEMPORARY_URL_SIGNATURE_CONTEXT,
+                "private/file.txt",
+                expires_at,
+                &signature,
+                expires_at
+            ),
             Err(StorageError::TemporaryUrlExpired { expires_at: 10_000 })
         ));
         let _ = fs::remove_dir_all(dir);
@@ -809,7 +896,8 @@ mod tests {
         let first = LocalStorage::new(&dir, "/files");
         let second = LocalStorage::new(&dir, "/files");
         let expires_at = epoch_seconds(SystemTime::now()).unwrap() + 60;
-        let signature = first.signature("file.txt", expires_at);
+        let signature =
+            first.signature_with(TEMPORARY_URL_SIGNATURE_CONTEXT, "file.txt", expires_at);
         assert!(matches!(
             second.verify_temporary_url("file.txt", expires_at, &signature),
             Err(StorageError::InvalidTemporaryUrlSignature)
@@ -822,30 +910,54 @@ mod tests {
     }
 
     #[test]
-    fn upload_policy_has_machine_readable_errors() {
-        let policy = UploadPolicy {
-            max_bytes: 2,
-            allowed_extensions: vec!["png".into()],
-        };
-        assert!(matches!(
-            policy.validate("avatar.jpg", b"ok"),
-            Err(StorageError::ExtensionNotAllowed)
-        ));
-        assert!(matches!(
-            policy.validate("avatar.png", b"too large"),
-            Err(StorageError::UploadTooLarge { max_bytes: 2 })
-        ));
+    fn local_lists_files_and_directories() {
+        let dir = test_directory("list");
+        let storage = explicit_storage(&dir);
+        storage.put("avatars/a.png", b"a").unwrap();
+        storage.put("avatars/2024/b.png", b"b").unwrap();
+        storage.put("readme.txt", b"hi").unwrap();
+        storage.make_directory("empty-dir").unwrap();
+
+        assert_eq!(storage.files("").unwrap(), vec!["readme.txt"]);
+        assert_eq!(storage.files("avatars").unwrap(), vec!["avatars/a.png"]);
+        assert_eq!(
+            storage.all_files("avatars").unwrap(),
+            vec!["avatars/2024/b.png", "avatars/a.png"]
+        );
+        assert!(
+            storage
+                .directories("")
+                .unwrap()
+                .iter()
+                .any(|name| name == "avatars" || name == "empty-dir")
+        );
+        storage.delete_directory("avatars").unwrap();
+        assert!(!storage.exists("avatars/a.png").unwrap());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn upload_and_signature_errors_map_to_typed_app_errors() {
-        let invalid: crate::AppError = StorageError::InvalidKey.into();
-        assert_eq!(invalid.status().as_u16(), 400);
-        let signature: crate::AppError = StorageError::InvalidTemporaryUrlSignature.into();
-        assert_eq!(signature.status().as_u16(), 403);
-        let io: crate::AppError =
-            StorageError::Io(std::io::Error::other("disk unavailable")).into();
-        assert_eq!(io.status().as_u16(), 500);
-        assert!(std::error::Error::source(&io).is_some());
+    fn download_signature_cannot_be_reused_for_upload() {
+        let dir = test_directory("upload-sig");
+        let storage = explicit_storage(&dir);
+        let download = storage
+            .temporary_url("reports/a.txt", Duration::from_secs(60))
+            .unwrap();
+        let signature = query_value(&download.url, "signature");
+        assert!(matches!(
+            storage.verify_temporary_upload_url("reports/a.txt", download.expires_at, signature),
+            Err(StorageError::InvalidTemporaryUrlSignature)
+        ));
+        let upload = storage
+            .temporary_upload_url("reports/a.txt", Duration::from_secs(60))
+            .unwrap();
+        storage
+            .verify_temporary_upload_url(
+                "reports/a.txt",
+                upload.expires_at,
+                query_value(&upload.url, "signature"),
+            )
+            .unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 }

@@ -56,6 +56,7 @@ pub fn routes() -> Router {
 - `name:` 生成 Rust `AppRoute::Posts` / `route::main::posts` 和 TS `route.posts()`；跳转用 `req.see_other_to(AppRoute::Posts)`，页面不要写死路径。
 - 当前用户：参数 `user: AuthUser`，或 `req.user()`（`use crate::prelude::*`）。字段：`req.input("title")`。
 - 写操作：Island 用 `#[server]`（自动挂 `POST /api/a`）；SSR 表单用 `POST` + `<CsrfField />`。
+- 用户上传：`Storage::disk("local")?` + `put_file` / `put_with_policy`；公开文件 `public` disk + `nx storage link`。详见 [`docs/08-platform.md`](./docs/08-platform.md) §5。
 
 ## 出站 HTTP（服务器里调第三方）
 
@@ -89,4 +90,4 @@ cargo build -p app --profile release-min --bin app
 
 P0 安全底座及 P1/P2 首版开发 API 已具备。发布链：不可变 `dist/<version>`、共享 `dist/data`、候选 PID 就绪校验、`current` 原子切换、旧进程排水。会话默认 `memory`（单进程开发）；生产滚动用 `[session] driver = "file"` 或接入 `redis`，`nx update` 会预检。浏览器用 opaque Cookie，API 可用 HS256 JWT Bearer；两者共享 `sid`。
 
-尚未做成框架门面的：真 SMTP、真 OAuth、出站 `Http::`（业务包直接 `reqwest`）、Redis 限流客户端。路线图见 [`docs/NEXT.md`](./docs/NEXT.md)。
+尚未做成框架门面的：真 SMTP、真 OAuth、出站 `Http::`（业务包直接 `reqwest`）、内置 S3/FTP SDK（用 `Storage::extend`）、Redis 限流客户端。路线图见 [`docs/NEXT.md`](./docs/NEXT.md)。

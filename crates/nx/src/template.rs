@@ -262,6 +262,24 @@ action_seal = true
 locale = "zh-CN"
 path = "./lang"
 
+[storage]
+default = "local"
+
+[storage.disks.local]
+driver = "local"
+root = "./storage/app"
+url = "/storage/private"
+visibility = "private"
+
+[storage.disks.public]
+driver = "local"
+root = "./storage/app/public"
+url = "/storage"
+visibility = "public"
+
+[storage.links]
+"public/storage" = "storage/app/public"
+
 [apps.www]
 hosts = ["www.localhost"]
 port = 3000
@@ -582,6 +600,24 @@ action_seal = true
 [i18n]
 locale = "zh-CN"
 path = "./lang"
+
+[storage]
+default = "local"
+
+[storage.disks.local]
+driver = "local"
+root = "./storage/app"
+url = "/storage/private"
+visibility = "private"
+
+[storage.disks.public]
+driver = "local"
+root = "./storage/app/public"
+url = "/storage"
+visibility = "public"
+
+[storage.links]
+"public/storage" = "storage/app/public"
 
 [apps.main]
 hosts = ["localhost", "127.0.0.1"]

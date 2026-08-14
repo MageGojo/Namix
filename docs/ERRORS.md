@@ -34,9 +34,12 @@ db::run(/* … */).await.map_err(AppError::internal)?;
 // 出站 HTTP：对方 5xx / 超时同样 internal，不要把响应原文丢给 Action / 页面
 client.get(url).send().await.map_err(AppError::internal)?;
 
-// Storage：策略问题是 4xx，I/O 是带 source 的 500
-let file = storage.put_with_policy("avatars/a.png", bytes, &policy)?;
+// Storage：策略/键/只读/未知盘 → 4xx；I/O → 带 source 的 500
+let storage = Storage::disk("local")?;
+storage.put_with_policy("avatars/a.png", bytes, &policy)?;
 ```
+
+`StorageError` 映射：`InvalidKey` / `UnknownDisk` / `Unsupported` / `InvalidJson` / 坏图 → 400；策略违规 → 422；签名过期或只读盘 → 403；对象不存在 → 404；其余 I/O/后端 → 500。
 
 经典 POST 若要把业务错误闪回页面：
 
