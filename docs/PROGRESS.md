@@ -107,3 +107,63 @@
 - 教学系列纠错：登出 POST+CSRF、Service `AppError`、TrustedProxies、Action 路径 `/api/a`。
 - 新增 [`08-platform.md`](./08-platform.md)、[`09-mail-sms.md`](./09-mail-sms.md)、[`10-events.md`](./10-events.md)、[`11-jwt-crypt.md`](./11-jwt-crypt.md)；扩写 06 聊天室、07 按真实代码、ERRORS / README 索引。
 - 验收：`cargo test -p app --lib policies::post_policy`。
+
+## 2026-08-13：框架审计优化
+
+- Action `ts` 必填、body 读失败硬失败、H3 关闭 0-RTT、OTP CSPRNG、限流 0 预算拒绝。
+- CSRF hidden_field 尊重配置字段名；`Path` 优先 `:id`；handler 支持 4/5 个提取器；`resource` update 同时注册 PUT。
+- `namix::OneTimeTokenStore`；示例密码重置默认落盘；Me 页去掉 `userId`；SSR 表单下发 `csrfToken`。
+- 新增 GitHub Actions：`fmt` / Clippy / 工作区测试 / `app` typecheck。
+- `WsHandshakeOutcome` 将 `Request` 装箱以压低枚举体积；storage 签名 URL 测试按参数名取 query。
+- 文档壳 API：属性（`.html` / `.body`）+ `.head` + `.template` / `.template_file`；暗亮色默认 `data-theme`，不强制 class。
+
+## 2026-08-13：写业务 DX
+
+- `nx make page Notes`：一次生成控制器、`ViewData`、`views/pages/notes.tsx`，并立刻写入 `mod.rs` / `view.rs`，不必等 cargo check。
+- 页面名 `Page::Posts` / `view::posts`（namix-build 生成），写错页面名会编不过。
+- 命名路由 `AppRoute::Login`（枚举）+ `route::main::login`（别名）+ TS `route.login()` / `AppRoute.Login`。不叫 `Route`，避免挡住 `Route::get`。
+- `req.csrf_token()`、`Option::or_not_found()`；validator 骨架改为 `FormRequest`；`FormRedirect::named(AppRoute::Login)`。
+- `app/src/prelude.rs`：`use crate::prelude::*` 一次拿到框架 API + `AppRoute` + `Page`。
+- 入门文档 [`START.md`](./START.md)。
+- 仓库根 `rust-analyzer.toml`（clippy、只检查当前包）+ `cargo nx` 别名。
+
+## 2026-08-13：可选 HTML 错误页
+
+- `Router` / `Boot`：`.error_page(404, …)` 与 `.error_pages(…)`。不注册则保持框架默认 HTML / JSON。
+- 未匹配路由、`AppError` 浏览器响应、`req.not_found()` / `req.forbidden()` / `req.error_response` 共用同一张表；JSON 与 Action 不走 HTML。
+- 示例：`controllers/errors.rs` + `views/pages/errors.tsx`；骨架 `nx make error`。
+- 具体状态优先于 catch-all；`web.rs` 优先于 `Boot`。
+
+## 2026-08-13：邮件验证 / unique / 队列 / 角色
+
+- 邮箱验证：注册写真实 email，`Mail` log/file 发验证信（不接真 SMTP）；`GET /email/verify`；资料页可重发。
+- `Rule::unique` / `exists` + SQLite `PresenceVerifier`；multipart `UploadedFile` + `Image`/`Mimes`/`MaxBytes`；资料页头像上传。
+- Durable queue：`[queue] file|sqlite` + `QueuedJob` + 延迟 + `nx work`（`app --bin work`）。
+- `User.role` + `namix::access` + `require_admin`；`GET /admin/users` + `DataTable`。
+- 短信 `register_transport`、Dev 社交登录 `/auth/dev`、`trans()` / `lang/*.json`。
+
+## 2026-08-14：校验错误改为稳定码
+
+`Rule` / `AppError::validation` 返回 `username.taken` 这类码。`trans_error` 与前端 `t()` 共用 `lang/*.json`（先字段键，再 `validation.{rule}`，`:attribute` 可走 `attributes.{field}`）。经典 POST 的 flash 与 HTML 错误页会翻译；Action JSON 仍传码，由 `useForm` 翻译。`<html lang>` 跟 `[i18n].locale`。`nx new` 带上 `lang/*.json` 与 `t()`。
+
+## 2026-08-14：nx clean
+
+`nx clean` 删除 `target/`、`app/node_modules/`、`app/public/build` 等可再生构建产物。`nx cleen` / `clen` 等常见拼写也能用；`-n` 只预览。
+
+## 2026-08-14：闭包路由
+
+`Route::get("/greeting", || "Hello World")` 与 `routes!` 里 `GET "/greeting" => || "Hello World"`。同步闭包可直接返回 `&str` / `String`，不必再包一层 `async fn`。
+
+## 2026-08-14：Request.input / req.user()
+
+`req.input("title")` 合并 query + JSON / 表单字段。示例应用 `req.user()` → `LoginUser`（`use crate::prelude::*`）。控制器方法仍是 `users::index`，不引入 PHP 的 `[Class, 'index']`。
+
+## 2026-08-14：出站 HTTP 约定
+
+不提供 `Http::get` 门面。服务器里用业务包 `reqwest` + `services/`；`#[server]` 只把展示 DTO 放进 `ActionOk`。文档：[08-platform §7](./08-platform.md#7-出站-http-调第三方)、[01-controllers](./01-controllers.md)。
+
+## 2026-08-14：DX 下一刀写进路线图
+
+功能面暂收口。下一阶段按写页面手感排（编译期 `routes.ts`、带参路由、`Link`、表单合一、校验码、Action TS），不堆 SMTP/OAuth/Redis。见 [`NEXT.md`](./NEXT.md) DX 节、[`DECISIONS.md`](./DECISIONS.md)。
+
+

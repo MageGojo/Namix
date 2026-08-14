@@ -26,6 +26,10 @@ pub fn seed(project: &Project) -> Result<(), String> {
     run_bin(project, "seed", &[])
 }
 
+pub fn work(project: &Project) -> Result<(), String> {
+    run_bin(project, "work", &[])
+}
+
 fn run_toasty(project: &Project, args: &[&str]) -> Result<(), String> {
     println!(
         "→ cargo run {} --bin toasty -- {}",

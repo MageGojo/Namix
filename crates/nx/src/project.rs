@@ -61,6 +61,21 @@ impl Project {
         &self.root
     }
 
+    /// 业务包 `namix.toml` `[features].{key}`。
+    pub fn feature_enabled(&self, key: &str) -> bool {
+        let Ok(raw) = fs::read_to_string(self.namix_toml()) else {
+            return false;
+        };
+        let Ok(value) = toml::from_str::<toml::Value>(&raw) else {
+            return false;
+        };
+        value
+            .get("features")
+            .and_then(|features| features.get(key))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
     pub fn uses_workspace_package(&self) -> bool {
         self.root != self.app_dir
             && self.root.join("Cargo.toml").is_file()

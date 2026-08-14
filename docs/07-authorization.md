@@ -6,7 +6,7 @@
 
 | 能力 | 用途 |
 |------|------|
-| `require_login` / `require_guest` / `require_vip` | 路由门禁（过 / 不过） |
+| `require_login` / `require_guest` / `require_vip` / `require_admin` | 路由门禁（过 / 不过） |
 | `AuthView` | 页面渲染时服务端分支，**不下发**授权字段到 props |
 | `Policy` + `authorize` / `Gate` | 写操作：会话身份 vs **库里的**资源 |
 
@@ -93,7 +93,7 @@ use crate::validators::post_form::PostRequest;
 
 pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<Response, AppError> {
     let id = req.param("id").and_then(|s| s.parse().ok()).ok_or(AppError::NotFound)?;
-    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+    let post = Post::find(id).await.or_not_found()?;
     authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
     UserService::new()
         .update_post(post.id, &form.title, &form.body)
@@ -103,7 +103,7 @@ pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<R
 
 pub async fn destroy(req: Request, user: AuthUser) -> Result<Response, AppError> {
     let id = req.param("id").and_then(|s| s.parse().ok()).ok_or(AppError::NotFound)?;
-    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+    let post = Post::find(id).await.or_not_found()?;
     authorize(&*user, &PostPolicy, Ability::Delete, Some(&post))?;
     UserService::new().delete_post(post.id).await?;
     Ok(req.see_other_to(route::main::posts))
@@ -162,7 +162,24 @@ let admin_banner = auth.when_allows(&AdminPolicy, Ability::View, None, |_| {
 
 ---
 
-## 5. Laravel 对照
+## 5. 角色与 permissions
+
+`User.role`（`user` / `admin`）+ `namix::access` 一张约定，不是四张 RBAC 表。
+
+```rust
+namix::access::install(
+    namix::Access::new()
+        .role("admin", &["*"])
+        .role("user", &["posts.create"]),
+);
+```
+
+路由：`require_admin`（或 `require_login` 后再判 `namix::role_allows(&user.role, "admin.access")`）。  
+示例：`GET /admin/users`。不要把 `role` / permissions 塞进页面 props 做授权。
+
+---
+
+## 6. Laravel 对照
 
 | Laravel | Namix |
 |---------|--------|

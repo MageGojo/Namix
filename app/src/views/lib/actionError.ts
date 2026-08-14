@@ -61,7 +61,7 @@ export function parseActionFailure(err: unknown): ActionException {
   return new ActionException(trimmed || '请求失败', { _: trimmed || '请求失败' })
 }
 
-/** 按完整原文替换（登录页自定义文案用） */
+/** 按稳定码替换；未命中则保留原值（再交给 `t()`） */
 export function translateErrors(
   errors: FieldErrors,
   messages: Record<string, string>,

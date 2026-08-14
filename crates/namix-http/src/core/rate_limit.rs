@@ -66,11 +66,14 @@ impl RateLimiter {
         policy: &RateLimitPolicy,
     ) -> Result<(), AppError> {
         if policy.max_requests == 0 || policy.window.is_zero() {
-            return Ok(());
+            return Err(AppError::RateLimited { retry_after: 1 });
         }
         let now = Instant::now();
         let key = format!("{namespace}:{}", subject(req, policy.scope));
-        let mut buckets = self.buckets.lock().expect("rate limit state");
+        let mut buckets = self
+            .buckets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let bucket = buckets.entry(key).or_default();
         while bucket
             .front()
@@ -191,5 +194,15 @@ mod tests {
         set_user_subject(&mut second, 8);
         assert!(limiter.check(&first, "action", &policy).is_ok());
         assert!(limiter.check(&second, "action", &policy).is_ok());
+    }
+
+    #[test]
+    fn zero_budget_is_closed_not_unlimited() {
+        let limiter = RateLimiter::new();
+        let policy = RateLimitPolicy::per_ip(0, Duration::from_secs(60));
+        assert!(matches!(
+            limiter.check(&req(), "login", &policy),
+            Err(AppError::RateLimited { .. })
+        ));
     }
 }

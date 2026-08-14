@@ -6,6 +6,7 @@ use namix::server_fn::expand_input_map;
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::extract::AuthUser;
+use crate::view;
 
 #[derive(Debug, Clone, Serialize, ViewData)]
 #[serde(rename_all = "camelCase")]
@@ -48,7 +49,7 @@ pub struct MailboxOk {
 
 /// GET /mailbox
 pub async fn page(req: Request, user: AuthUser) -> Response {
-    req.view("mailbox")
+    req.view(view::mailbox)
         .island()
         .title("邮箱与短信")
         .data(MailboxPage {
@@ -124,10 +125,10 @@ pub async fn send_mail_action(req: Request) -> Result<ActionOk<MailboxOk>, Actio
         .get("to")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ActionError::field("to", "to is required"))?
+        .ok_or_else(|| ActionError::field("to", "to.required"))?
         .to_string();
     if !to.contains('@') {
-        return Err(ActionError::field("to", "to must be a valid email"));
+        return Err(ActionError::field("to", "to.email"));
     }
     let subject = map
         .get("subject")
@@ -186,10 +187,13 @@ pub async fn send_code_action(req: Request) -> Result<ActionOk<MailboxOk>, Actio
         .get("phone")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ActionError::field("phone", "phone is required"))?
+        .ok_or_else(|| ActionError::field("phone", "phone.required"))?
         .to_string();
 
-    Sms::send_code(&phone).map_err(|e| ActionError::field("phone", e.to_string()))?;
+    Sms::send_code(&phone).map_err(|error| match error {
+        SmsError::InvalidPhone => ActionError::field("phone", "phone.invalid"),
+        other => ActionError::message(other.to_string()),
+    })?;
 
     Ok(ActionOk::new(MailboxOk {
         redirect: "/mailbox".into(),
@@ -204,18 +208,18 @@ pub async fn verify_code_action(req: Request) -> Result<ActionOk<MailboxOk>, Act
         .get("phone")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ActionError::field("phone", "phone is required"))?
+        .ok_or_else(|| ActionError::field("phone", "phone.required"))?
         .to_string();
     let code = map
         .get("code")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ActionError::field("code", "code is required"))?
+        .ok_or_else(|| ActionError::field("code", "code.required"))?
         .to_string();
 
     let ok = Sms::verify_code(&phone, &code).map_err(|error| ActionError::message(error.to_string()))?;
     if !ok {
-        return Err(ActionError::field("code", "invalid or expired code"));
+        return Err(ActionError::field("code", "code.otp"));
     }
 
     Ok(ActionOk::new(MailboxOk {

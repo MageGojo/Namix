@@ -46,14 +46,26 @@ function obfuscateClientJs(): Plugin {
   }
 }
 
+/** 与运行时 `NAMIX_ASSET_PREFIX` / `NAMIX_ASSET_BASE` 对齐，避免子路径挂载后 JS/wasm 404 白屏 */
+function productionAssetBase() {
+  const fromBase = (process.env.NAMIX_ASSET_BASE || '').trim().replace(/\/$/, '')
+  if (fromBase) return (fromBase.startsWith('/') ? fromBase : `/${fromBase}`) + '/'
+  const prefix = (process.env.NAMIX_ASSET_PREFIX || '').trim().replace(/\/$/, '')
+  if (prefix) {
+    const p = prefix.startsWith('/') ? prefix : `/${prefix}`
+    return `${p}/build/`
+  }
+  return '/build/'
+}
+
 export default defineConfig(({ command, isSsrBuild }) => ({
   plugins: [
     react(),
     tailwindcss(),
     !isSsrBuild && obfuscateOn && obfuscateClientJs(),
   ],
-  // 开发 HMR 挂在 /；生产静态挂在 Namix `/build/*`
-  base: command === 'serve' ? '/' : '/build/',
+  // 开发 HMR 挂在 /；生产静态挂在 Namix `/build/*`（可加 NAMIX_ASSET_PREFIX）
+  base: command === 'serve' ? '/' : productionAssetBase(),
   publicDir: false,
   assetsInclude: ['**/*.wasm'],
   build: {

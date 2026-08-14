@@ -1,0 +1,2 @@
+[alias]
+nx = "run -p nx --"

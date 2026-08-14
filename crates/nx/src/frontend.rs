@@ -45,7 +45,9 @@ pub fn scaffold(root: &Path, name: &str, lang: FrontendLang, tailwind: bool) -> 
                     "page.tsx",
                     "progress.ts",
                     "router.ts",
+                    "theme.ts",
                     "useForm.ts",
+                    "i18n.ts",
                 ][..],
             ),
             ("components", &["head.tsx", "link.tsx"][..]),
@@ -67,6 +69,16 @@ pub fn scaffold(root: &Path, name: &str, lang: FrontendLang, tailwind: bool) -> 
     if !csrf_runtime.is_file() {
         write(&csrf_runtime, CSRF_TSX)?;
     }
+    let theme_runtime = app.join("src/views/lib/theme.ts");
+    if !theme_runtime.is_file() {
+        write(&theme_runtime, THEME_TS)?;
+    }
+    let i18n_runtime = app.join("src/views/lib/i18n.ts");
+    if !i18n_runtime.is_file() {
+        write(&i18n_runtime, I18N_TS)?;
+    }
+    write(app.join("lang/zh-CN.json"), LANG_ZH_CN)?;
+    write(app.join("lang/en.json"), LANG_EN)?;
 
     write(app.join("src/views/namix.ts"), NAMIX_TS)?;
     write(app.join("src/views/routes.ts"), ROUTES_TS)?;
@@ -224,12 +236,18 @@ const PACKAGE_JSON: &str = r#"{
 }
 "#;
 
-const NAMIX_TS: &str = r#"/** Namix frontend facade (business-neutral). */
+const NAMIX_TS: &str = r#"/** Namix frontend facade (business-neutral).
+ *
+ * import { Link, Head, useForm, route, AppRoute } from '../namix'
+ * route.login()  ≡  route(AppRoute.Login)
+ */
 export { Link, type LinkProps } from './components/link'
 export { Head } from './components/head'
+export { applyTheme, setTheme, theme, toggleTheme, type Theme } from './lib/theme'
 export { router, type VisitOptions } from './lib/router'
 export { useForm, type SubmitOpts } from './lib/useForm'
 export { csrfToken, CsrfField, type CsrfFieldProps } from './lib/csrf'
+export { t } from './lib/i18n'
 export {
   ActionException,
   parseActionFailure,
@@ -238,7 +256,149 @@ export {
 } from './lib/actionError'
 export { usePage, PageProvider } from './lib/page'
 export { progress, configureProgress } from './lib/progress'
+export { route, AppRoute, routes, type RouteName } from './routes'
 export type { NamixPage, PageProps } from './types'
+"#;
+
+const I18N_TS: &str = r#"import zh from '../../../lang/zh-CN.json'
+import en from '../../../lang/en.json'
+
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
+
+const catalogs: Record<string, Record<string, string>> = {
+  'zh-CN': flatten('', zh as Json, {}),
+  zh: flatten('', zh as Json, {}),
+  en: flatten('', en as Json, {}),
+}
+
+function flatten(prefix: string, value: Json, out: Record<string, string>): Record<string, string> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      const next = prefix ? `${prefix}.${key}` : key
+      flatten(next, child, out)
+    }
+    return out
+  }
+  if (prefix && (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')) {
+    out[prefix] = String(value)
+  }
+  return out
+}
+
+export function locale(): string {
+  if (typeof document === 'undefined') return 'zh-CN'
+  return document.documentElement.lang || 'zh-CN'
+}
+
+function catalog(): Record<string, string> {
+  const current = locale()
+  return catalogs[current] ?? catalogs['zh-CN'] ?? {}
+}
+
+function interpolate(template: string, params?: Record<string, string>): string {
+  if (!params) return template
+  let out = template
+  for (const [key, value] of Object.entries(params)) {
+    out = out.replaceAll(`:${key}`, value)
+  }
+  return out
+}
+
+/** Look up `auth.failed` / `username.taken`; falls back to `validation.{rule}`. */
+export function t(key: string, params?: Record<string, string>): string {
+  const messages = catalog()
+  const specific = messages[key]
+  if (specific) return interpolate(specific, params)
+  const dot = key.lastIndexOf('.')
+  if (dot > 0) {
+    const attribute = key.slice(0, dot)
+    const rule = key.slice(dot + 1)
+    const fallback = messages[`validation.${rule}`]
+    if (fallback) {
+      const attr = messages[`attributes.${attribute}`] ?? attribute
+      return interpolate(fallback, { attribute: attr, ...params })
+    }
+  }
+  return interpolate(key, params)
+}
+"#;
+
+const LANG_ZH_CN: &str = r#"{
+  "auth": {
+    "failed": "用户名或密码不正确"
+  },
+  "validation": {
+    "failed": "校验未通过",
+    "payload": "请求内容无效",
+    "required": "请填写 :attribute",
+    "email": ":attribute 不是有效邮箱",
+    "min": ":attribute 太短",
+    "max": ":attribute 太长",
+    "between": ":attribute 长度不符合要求",
+    "numeric": ":attribute 必须是数字",
+    "integer": ":attribute 必须是整数",
+    "digits": ":attribute 位数不正确",
+    "alpha_num": ":attribute 只能含字母和数字",
+    "url": ":attribute 必须是网址",
+    "local_path": ":attribute 必须是站内路径",
+    "boolean": ":attribute 必须是布尔值",
+    "accepted": "请同意 :attribute",
+    "declined": "请拒绝 :attribute",
+    "eq": ":attribute 值不正确",
+    "invalid": ":attribute 不合法",
+    "starts_with": ":attribute 前缀不正确",
+    "ends_with": ":attribute 后缀不正确",
+    "confirmed": "两次 :attribute 不一致",
+    "same": ":attribute 必须与另一字段相同",
+    "regex": ":attribute 格式不正确",
+    "file": "请上传 :attribute",
+    "image": ":attribute 必须是图片",
+    "mimes": ":attribute 文件类型不允许",
+    "max_bytes": ":attribute 文件过大",
+    "taken": ":attribute 已被占用",
+    "exists": ":attribute 不存在",
+    "presence": "暂时无法校验 :attribute"
+  }
+}
+"#;
+
+const LANG_EN: &str = r#"{
+  "auth": {
+    "failed": "Invalid username or password"
+  },
+  "validation": {
+    "failed": "Validation failed",
+    "payload": "The request payload is invalid",
+    "required": ":attribute is required",
+    "email": ":attribute must be a valid email",
+    "min": ":attribute is too short",
+    "max": ":attribute is too long",
+    "between": ":attribute length is invalid",
+    "numeric": ":attribute must be numeric",
+    "integer": ":attribute must be an integer",
+    "digits": ":attribute has the wrong number of digits",
+    "alpha_num": ":attribute must be alphanumeric",
+    "url": ":attribute must be a URL",
+    "local_path": ":attribute must be a local path",
+    "boolean": ":attribute must be boolean",
+    "accepted": ":attribute must be accepted",
+    "declined": ":attribute must be declined",
+    "eq": ":attribute is incorrect",
+    "invalid": ":attribute is invalid",
+    "starts_with": ":attribute prefix is invalid",
+    "ends_with": ":attribute suffix is invalid",
+    "confirmed": ":attribute confirmation does not match",
+    "same": ":attribute must match the other field",
+    "regex": ":attribute format is invalid",
+    "file": ":attribute must be a file",
+    "image": ":attribute must be an image",
+    "mimes": ":attribute file type is not allowed",
+    "max_bytes": ":attribute is too large",
+    "taken": ":attribute has already been taken",
+    "exists": ":attribute does not exist",
+    "presence": ":attribute cannot be checked right now"
+  }
+}
 "#;
 
 const CSRF_TSX: &str = r#"import { useEffect, useState } from 'react'
@@ -276,12 +436,65 @@ export function CsrfField({ token }: CsrfFieldProps) {
 }
 "#;
 
+const THEME_TS: &str = r#"export type Theme = 'dark' | 'light' | 'system'
+
+const COOKIE = 'namix_theme'
+
+function readCookie(source: string): string {
+  for (const part of source.split(';')) {
+    const separator = part.indexOf('=')
+    if (separator < 0 || part.slice(0, separator).trim() !== COOKIE) continue
+    const value = part.slice(separator + 1).trim()
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
+  }
+  return ''
+}
+
+export function theme(cookieSource?: string): Theme {
+  const source = cookieSource ?? (typeof document === 'undefined' ? '' : document.cookie)
+  const value = readCookie(source)
+  if (value === 'dark' || value === 'light' || value === 'system') return value
+  return 'system'
+}
+
+export function applyTheme(next: Theme = theme()) {
+  if (typeof document === 'undefined') return
+  const dark =
+    next === 'dark' ||
+    (next !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const resolved = dark ? 'dark' : 'light'
+  document.documentElement.setAttribute('data-theme', resolved)
+  document.documentElement.style.colorScheme = resolved
+}
+
+export function setTheme(next: Theme) {
+  if (typeof document === 'undefined') return
+  const secure = location.protocol === 'https:' ? '; Secure' : ''
+  document.cookie = `${COOKIE}=${encodeURIComponent(next)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`
+  applyTheme(next)
+}
+
+export function toggleTheme() {
+  setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark')
+}
+"#;
+
 const ROUTES_TS: &str = r#"/* @generated bootstrap; Namix codegen replaces this file. */
 export const routes = {
   home: { uri: '/', methods: ['GET'] as const },
 } as const
 
 export type RouteName = keyof typeof routes
+
+/** 与 Rust `AppRoute::Home` 对齐；`route(AppRoute.Home)` ≡ `route.home()` */
+export const AppRoute = {
+  Home: 'home',
+} as const
+export type AppRoute = (typeof AppRoute)[keyof typeof AppRoute]
 
 function fill(uri: string, params?: Record<string, string | number>): string {
   let out = uri
@@ -345,6 +558,7 @@ const TSCONFIG: &str = r#"{
     "allowJs": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
@@ -419,6 +633,11 @@ export default defineConfig(({ command }) => ({
 "#;
 
 const APP_CSS_TW: &str = r#"@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *), &:where([data-theme=dark], [data-theme=dark] *));
+
+html { color-scheme: light; background: #fafafa; color: #18181b; }
+html[data-theme="dark"] { color-scheme: dark; background: #09090b; color: #fafafa; }
+html[data-theme="dark"] body { background: inherit; color: inherit; }
 
 #nprogress { pointer-events: none; }
 #nprogress .bar {
@@ -470,6 +689,12 @@ mod tests {
             let facade = fs::read_to_string(root.join("app/src/views/namix.ts"))
                 .expect("read frontend facade");
             assert!(facade.contains("csrfToken, CsrfField"));
+            assert!(facade.contains("export { t }"));
+            assert!(root.join("app/src/views/lib/i18n.ts").is_file());
+            assert!(root.join("app/lang/zh-CN.json").is_file());
+            assert!(root.join("app/lang/en.json").is_file());
+            let tsconfig = fs::read_to_string(root.join("app/tsconfig.json")).expect("tsconfig");
+            assert!(tsconfig.contains("resolveJsonModule"));
             let _ = fs::remove_dir_all(root);
         }
     }

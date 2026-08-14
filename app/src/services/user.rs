@@ -55,22 +55,29 @@ impl UserService {
             .unwrap_or(true)
     }
 
-    /// 注册：User + 空 Profile（1:1）
-    pub async fn register(&self, username: &str, password: &str) -> Result<User, AppError> {
+    /// 注册：User + Profile（1:1）
+    pub async fn register(
+        &self,
+        username: &str,
+        password: &str,
+        email: &str,
+    ) -> Result<User, AppError> {
         if username == "root" {
-            return Err(AppError::validation("username", "username is reserved"));
+            return Err(AppError::validation("username", "username.reserved"));
         }
         if User::find_by_username(username).await.is_some() {
-            return Err(AppError::conflict("username already taken"));
+            return Err(AppError::validation("username", "username.taken"));
         }
 
         let username = username.to_string();
         let name = username.clone();
+        let email = email.to_string();
         let password_hash = Self::hash_password(password)?;
 
         db::run(move |mut db| {
             let username = username.clone();
             let name = name.clone();
+            let email = email.clone();
             let password_hash = password_hash.clone();
             async move {
                 let user = toasty::create!(User {
@@ -78,6 +85,7 @@ impl UserService {
                     password_hash: password_hash.as_str(),
                     name: name.as_str(),
                     is_vip: false,
+                    role: "user",
                     email_verified_at: None,
                 })
                 .exec(&mut db)
@@ -86,8 +94,9 @@ impl UserService {
                 toasty::create!(Profile {
                     user_id: user.id,
                     display_name: name.as_str(),
-                    email: "",
+                    email: email.as_str(),
                     bio: "",
+                    avatar_path: "",
                 })
                 .exec(&mut db)
                 .await?;
@@ -209,6 +218,7 @@ impl UserService {
                         display_name: display_name.as_str(),
                         email: email.as_str(),
                         bio: bio.as_str(),
+                        avatar_path: "",
                     })
                     .exec(&mut db)
                     .await
@@ -290,6 +300,63 @@ impl UserService {
             let mut user = User::get_by_id(&mut db, user_id).await?;
             toasty::update!(user { is_vip: is_vip }).exec(&mut db).await?;
             User::get_by_id(&mut db, user_id).await
+        })
+        .await
+        .map_err(AppError::internal)
+    }
+
+    pub async fn set_role(&self, user_id: u64, role: &str) -> Result<User, AppError> {
+        let role = role.to_string();
+        db::run(move |mut db| {
+            let role = role.clone();
+            async move {
+                let mut user = User::get_by_id(&mut db, user_id).await?;
+                toasty::update!(user { role: role.as_str() }).exec(&mut db).await?;
+                User::get_by_id(&mut db, user_id).await
+            }
+        })
+        .await
+        .map_err(AppError::internal)
+    }
+
+    pub async fn mark_email_verified(&self, user_id: u64) -> Result<User, AppError> {
+        let now = jiff::Timestamp::now();
+        db::run(move |mut db| async move {
+            let mut user = User::get_by_id(&mut db, user_id).await?;
+            toasty::update!(user { email_verified_at: Some(now) })
+                .exec(&mut db)
+                .await?;
+            User::get_by_id(&mut db, user_id).await
+        })
+        .await
+        .map_err(AppError::internal)
+    }
+
+    pub async fn save_avatar(&self, user_id: u64, path: &str) -> Result<Profile, AppError> {
+        let path = path.to_string();
+        db::run(move |mut db| {
+            let path = path.clone();
+            async move {
+                let user = User::get_by_id(&mut db, user_id).await?;
+                if let Some(mut profile) = user.profile().exec(&mut db).await? {
+                    toasty::update!(profile {
+                        avatar_path: path.as_str(),
+                    })
+                    .exec(&mut db)
+                    .await?;
+                    Ok(profile)
+                } else {
+                    toasty::create!(Profile {
+                        user_id,
+                        display_name: user.name.as_str(),
+                        email: "",
+                        bio: "",
+                        avatar_path: path.as_str(),
+                    })
+                    .exec(&mut db)
+                    .await
+                }
+            }
         })
         .await
         .map_err(AppError::internal)

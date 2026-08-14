@@ -6,18 +6,48 @@
 //! ```
 
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config::SmsSection;
 
 static SMS: OnceLock<SmsRuntime> = OnceLock::new();
+static TRANSPORTS: OnceLock<RwLock<HashMap<String, Arc<dyn SmsTransport>>>> = OnceLock::new();
+
+pub type SmsTransportError = Box<dyn StdError + Send + Sync + 'static>;
+pub type SmsTransportResult<T> = Result<T, SmsTransportError>;
+
+/// Adapter contract for Aliyun / Twilio / etc. Register before `Boot::run`.
+pub trait SmsTransport: Send + Sync + 'static {
+    fn send(&self, message: &SmsMessage) -> SmsTransportResult<()>;
+}
+
+pub fn register_transport(driver: impl AsRef<str>, transport: impl SmsTransport) -> SmsResult<()> {
+    let driver = driver.as_ref().trim().to_ascii_lowercase();
+    if driver.is_empty() || matches!(driver.as_str(), "log" | "file") {
+        return Err(SmsError::UnsupportedDriver { driver });
+    }
+    let mut transports = transports()
+        .write()
+        .map_err(|_| SmsError::StoreLockPoisoned)?;
+    if transports.contains_key(&driver) {
+        return Err(SmsError::UnsupportedDriver { driver });
+    }
+    transports.insert(driver, Arc::new(transport));
+    Ok(())
+}
+
+fn transports() -> &'static RwLock<HashMap<String, Arc<dyn SmsTransport>>> {
+    TRANSPORTS.get_or_init(|| RwLock::new(HashMap::new()))
+}
 
 #[derive(Debug, Error)]
 pub enum SmsError {
@@ -42,7 +72,7 @@ pub type SmsResult<T> = Result<T, SmsError>;
 impl From<SmsError> for crate::AppError {
     fn from(error: SmsError) -> Self {
         match error {
-            SmsError::InvalidPhone => Self::validation("phone", "invalid phone number"),
+            SmsError::InvalidPhone => Self::validation("phone", "phone.invalid"),
             SmsError::UnsupportedDriver { .. } => Self::bad_request("unsupported sms driver"),
             other => Self::internal(other),
         }
@@ -108,9 +138,26 @@ impl Sms {
                 append_jsonl(&rt.store.join("sent.jsonl"), &msg, &rt.lock)?;
                 Ok(())
             }
-            other => Err(SmsError::UnsupportedDriver {
-                driver: other.into(),
-            }),
+            other => {
+                let transport = transports()
+                    .read()
+                    .map_err(|_| SmsError::StoreLockPoisoned)?
+                    .get(other)
+                    .cloned();
+                let Some(transport) = transport else {
+                    return Err(SmsError::UnsupportedDriver {
+                        driver: other.into(),
+                    });
+                };
+                transport.send(&msg).map_err(|source| {
+                    crate::log::error!("sms transport `{other}` failed: {source}");
+                    SmsError::UnsupportedDriver {
+                        driver: other.into(),
+                    }
+                })?;
+                append_jsonl(&rt.store.join("sent.jsonl"), &msg, &rt.lock)?;
+                Ok(())
+            }
         }
     }
 
@@ -152,7 +199,7 @@ impl Sms {
             otps.remove(&phone);
             return Ok(false);
         }
-        let ok = entry.code == code;
+        let ok = constant_time_eq(entry.code.as_bytes(), code.as_bytes());
         if ok {
             otps.remove(&phone);
         }
@@ -215,10 +262,18 @@ fn normalize_phone(phone: &str) -> SmsResult<String> {
 }
 
 fn generate_code() -> String {
-    let n = now_secs() % 1_000_000;
-    // 混一点进程噪声，避免纯秒级撞码
-    let noise = (std::process::id() as u64).wrapping_mul(17) % 1_000_000;
-    format!("{:06}", (n.wrapping_add(noise)) % 1_000_000)
+    let mut bytes = [0u8; 4];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000)
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut diff = left.len() ^ right.len();
+    let len = left.len().max(right.len());
+    for i in 0..len {
+        diff |= usize::from(*left.get(i).unwrap_or(&0) ^ *right.get(i).unwrap_or(&0));
+    }
+    diff == 0
 }
 
 fn append_jsonl(path: &Path, msg: &SmsMessage, lock: &Mutex<()>) -> SmsResult<()> {

@@ -61,18 +61,7 @@ impl RouteCatalog {
 
     /// 用参数填充 `:id` / `*path` 等占位符。
     pub fn url(&self, name: &str, params: &[(&str, &str)]) -> Option<String> {
-        let mut out = self.path(name)?.to_string();
-        for (key, value) in params {
-            for token in [format!(":{key}"), format!("*{key}")] {
-                if out.contains(&token) {
-                    out = out.replace(&token, value);
-                }
-            }
-        }
-        if has_unfilled_param(&out) {
-            return None;
-        }
-        Some(out)
+        fill_uri(self.path(name)?, params)
     }
 
     pub fn names(&self) -> impl Iterator<Item = (&str, &str)> {
@@ -177,6 +166,23 @@ impl RouteCatalog {
     }
 }
 
+/// 把 `/profile/:id` 填成 `/profile/1`。仍有未填占位符时返回 `None`。
+pub fn fill_uri(pattern: &str, params: &[(&str, &str)]) -> Option<String> {
+    let mut out = pattern.to_string();
+    for (key, value) in params {
+        for token in [format!(":{key}"), format!("*{key}")] {
+            if out.contains(&token) {
+                out = out.replace(&token, value);
+            }
+        }
+    }
+    if has_unfilled_param(&out) {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 fn has_unfilled_param(uri: &str) -> bool {
     uri.split('/')
         .any(|segment| segment.starts_with(':') || segment.starts_with('*'))
@@ -262,6 +268,12 @@ mod tests {
             Some("/teams/namix/assets/images/logo.svg".into())
         );
         assert_eq!(catalog.url("assets.show", &[("team", "namix")]), None);
+        assert_eq!(fill_uri("/me", &[]), Some("/me".into()));
+        assert_eq!(
+            fill_uri("/profile/:id", &[("id", "5")]),
+            Some("/profile/5".into())
+        );
+        assert_eq!(fill_uri("/profile/:id", &[]), None);
     }
 
     #[test]

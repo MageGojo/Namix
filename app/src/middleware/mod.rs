@@ -2,6 +2,7 @@
 // 新增 .rs 后 cargo check 自动注册。
 
 pub mod auth;
+pub mod document;
 pub mod extract;
 pub mod logger;
 pub mod session;

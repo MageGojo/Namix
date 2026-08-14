@@ -3422,6 +3422,7 @@ dependencies = [
  "namix-http",
  "namix-macros",
  "rand 0.8.7",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",

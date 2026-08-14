@@ -82,7 +82,8 @@ impl TlsConfig {
             .with_single_cert(self.certs.clone(), key)
             .unwrap_or_else(|e| panic!("构建 HTTP/3 rustls 配置失败: {e}"));
         config.alpn_protocols = vec![b"h3".to_vec()];
-        config.max_early_data_size = u32::MAX;
+        // Reject 0-RTT so POST / Action bodies cannot be replayed via early data.
+        config.max_early_data_size = 0;
         Arc::new(config)
     }
 }

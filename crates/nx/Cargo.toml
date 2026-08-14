@@ -2,7 +2,7 @@
 name = "nx"
 version.workspace = true
 edition.workspace = true
-description = "Namix CLI：new / make / migrate / seed / export / build / dev / doctor"
+description = "Namix CLI：new / make / migrate / seed / export / build / dev / doctor / clean"
 
 [[bin]]
 name = "nx"

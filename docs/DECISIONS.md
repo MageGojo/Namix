@@ -2,7 +2,7 @@
 
 ## 2026-08-05：路由采用宏 DSL，保留链式 API
 
-`Route`/`Router` 链式 API 保留给动态构造和底层场景；业务路由默认使用 `routes!`。它将大量 `.merge(Route::… .register())` 压缩为可分组的声明式表，同时继续产出同一份命名路由 catalog。DSL 现覆盖 HTTP、PATCH 和 WebSocket；WebSocket 不接受 HTTP 中间件，以避免产生看似生效但实际不进入 Upgrade 流程的配置。
+`Route`/`Router` 链式 API 保留给动态构造和底层场景；业务路由默认使用 `routes!`。它将大量 `.merge(Route::… .register())` 压缩为可分组的声明式表，同时继续产出同一份命名路由 catalog。DSL 现覆盖 HTTP、PATCH 和 WebSocket；WebSocket 不接受 HTTP 中间件，以避免产生看似生效但实际不进入 Upgrade 流程的配置。短响应可用同步闭包：`GET "/greeting" => || "Hello World"` / `Route::get("/greeting", || "Hello World")`，不必为纯文本再包一层 `async fn`。
 
 ## 2026-08-05：跳转目标只使用站内绝对路径
 
@@ -38,7 +38,28 @@ Cookie 签名留在应用边界；会话记录通过框架 `SessionStore` 持久
 
 写操作以「会话中的 Actor」对照「数据库加载的 Resource」：`authorize(&user, &PostPolicy, Ability::Update, Some(&post))`。前端只提交资源 id 与内容字段；body 中的 `user_id` / 角色声明不可信。文档见 [`07-authorization.md`](./07-authorization.md)。
 
-## 2026-08-10：子路径挂载用 ASSET_PREFIX，不写死 `/build`
+## 2026-08-13：框架审计后的安全与 DX 收口
+
+- Action 包络强制 `ts`（缺省 400、过期 410），避免明文重放。
+- 读 body 失败返回 400，不再静默当空表单。
+- HTTP/3 关闭 0-RTT；短信 OTP 改 CSPRNG；限流 `max_requests=0` 视为关闭通道。
+- CSRF `hidden_field` 跟随 `CsrfConfig.form_field`；提取器支持 4–5 元参数；`resource` 的 update 同时绑 PUT/PATCH。
+- `OneTimeTokenStore`（memory/file）供密码重置等一次性令牌跨重启使用。
+- CI 以 Clippy `-D warnings` 为门禁：`WsHandshakeOutcome` 装箱 `Request`，避免大枚举。
+
+## 2026-08-13：页面名与路由名同一套生成常量
+
+`req.view("login")` 仍可用，但业务默认 `req.view(Page::Login)`（`view::login` 为别名）。`app/src/view.rs` 由 namix-build 根据 `views/pages/*.tsx` 生成。新页面用 `nx make page`，不要先 `make controller` 再手配 TSX。
+
+命名路由生成 **`AppRoute` 枚举**（不要叫 `Route`，以免挡住 `Route::get`）。`route::main::login` 是同一枚举值的常量别名。TS：`route.login()` 与 `route(AppRoute.Login)` 等价。带参：`AppRoute::Profile.to(&[("id", "1")])`。入门：[START.md](./START.md)。
+
+## 2026-08-13：HTML 错误页显式注册、默认不强制
+
+自定义 404/403/500 是可选的。不扫描 `errors/404.tsx`；要在 `routes()`（或 `Boot`）上 `.error_page` / `.error_pages`。JSON 与 Action 永远不走 HTML 页。具体状态优先于 catch-all。
+
+## 2026-08-13：文档壳由 Rust 产出
+
+`<html>` / `<body>` 由 Rust 文档壳产出。默认能力是**任意属性**（`data-theme`、`style`、`id`）和 **`<head>` 片段**；`class` 只是可选糖。暗亮色走 `data-theme` + `color-scheme` + 文档级 CSS，页面不必写 `dark:`。需要整份 HTML 时用 `.template(...)` 或 `.template_file("src/views/layouts/app.html")`（占位符 `{{html_attrs}}` / `{{app}}` 等）。TSX `<Head>` 只服务软导航后的标题/meta。
 
 血的教训（live-relay 外网 `/lr` 白屏）：HTML 写死 `/build/…`，反向代理只转发 `/lr*` 时，浏览器拉 JS 落到错误上游 → 404 → island 不水合。
 
@@ -47,3 +68,9 @@ Cookie 签名留在应用边界；会话记录通过框架 `SessionStore` 持久
 - 运行时 `NAMIX_ASSET_PREFIX=/lr`（或 `NAMIX_ASSET_BASE=/lr/build`）生成标签 `/lr/build/…`，并额外注册同路径静态路由；根 `/build/*` 始终保留。
 - Vite 脚手架 `base` 读取同一组环境变量，与标签一致。
 - 磁盘目录仍是 `public/build/`，与 URL 前缀解耦。
+
+## 2026-08-14：下一阶段做 Rust ↔ React 写体验，不堆功能面
+
+Laravel 式能力（校验 unique、队列、角色、邮件验证、i18n、后台表）第一版已落地。再接真 SMTP / 真 OAuth / 更重后台套件，对「每天写一个页面」帮助很小。
+
+下一刀优先缩短 **Rust 写完 → TSX 能点、类型能对上** 这一圈：编译期 `views/routes.ts`、带参路由类型、`Link` 吃命名路由、表单 JSON/文件同一套、`ActionOk<T>` 进 TS。校验稳定码已落地（`username.taken` + `lang/*.json`）。不引入 Redis。完整排序见 [NEXT.md](./NEXT.md) DX 节。

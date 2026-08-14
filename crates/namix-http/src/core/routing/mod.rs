@@ -5,7 +5,7 @@ mod route;
 mod router;
 mod ts_routes;
 
-pub use catalog::{IntoRouteName, NamedRoute, RouteCatalog, RouteExport};
+pub use catalog::{IntoRouteName, NamedRoute, RouteCatalog, RouteExport, fill_uri};
 pub use route::Route;
 pub use router::Router;
 pub(crate) use router::WsHandshakeOutcome;

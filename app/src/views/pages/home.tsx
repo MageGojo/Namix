@@ -1,7 +1,6 @@
 import type { HomePage } from '../generated/HomePage'
 import { LoginForm } from '../generated/fields'
-import { Head, Link } from '../namix'
-import { routes } from '../routes'
+import { Head, Link, routes } from '../namix'
 import type { PageProps } from '../types'
 
 type Props = PageProps<HomePage>

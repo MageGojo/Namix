@@ -228,33 +228,36 @@ async fn dispatch_action(mut req: Request) -> Response {
 
 #[allow(clippy::result_large_err)]
 fn peel_envelope(req: &Request) -> Result<(String, Vec<u8>), Response> {
-    let v: serde_json::Value = serde_json::from_slice(req.body())
-        .map_err(|e| action_error(StatusCode::BAD_REQUEST, format!("envelope json: {e}")))?;
+    let v: serde_json::Value = serde_json::from_slice(req.body()).map_err(|error| {
+        tracing::debug!(error = %error, "action envelope json decode failed");
+        action_error(StatusCode::BAD_REQUEST, "invalid action envelope")
+    })?;
     let tok = v
         .get("t")
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| action_error(StatusCode::BAD_REQUEST, "envelope missing t"))?
         .to_string();
-    if let Some(ts) = v.get("ts").and_then(|x| x.as_u64()) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if now.abs_diff(ts) > ENVELOPE_SKEW_SECS {
-            return Err(action_error(StatusCode::GONE, "envelope expired"));
-        }
+    let Some(ts) = v.get("ts").and_then(|x| x.as_u64()) else {
+        return Err(action_error(StatusCode::BAD_REQUEST, "envelope missing ts"));
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now.abs_diff(ts) > ENVELOPE_SKEW_SECS {
+        return Err(action_error(StatusCode::GONE, "envelope expired"));
     }
     let input = v.get("i").cloned().unwrap_or(serde_json::json!({}));
     let bytes = serde_json::to_vec(&input)
-        .map_err(|e| action_error(StatusCode::BAD_REQUEST, format!("envelope i: {e}")))?;
+        .map_err(|_| action_error(StatusCode::BAD_REQUEST, "invalid action envelope"))?;
     Ok((tok, bytes))
 }
 
 fn find_by_token(tok: &str) -> Option<&'static ServerFn> {
     inventory::iter::<ServerFn>
         .into_iter()
-        .find(|f| f.token == tok || action_token(f.name) == tok)
+        .find(|f| f.token == tok)
 }
 
 fn derive_aes_key(server_secret: &[u8; 32], client_pub: &[u8; 32]) -> Result<[u8; 32], String> {
@@ -355,6 +358,18 @@ pub fn expand_input_map(req: &Request) -> Result<HashMap<String, String>, String
     }
 
     let ct = req.header_or("content-type", "");
+    if crate::core::upload::is_multipart(ct) {
+        let bag = req.form_bag();
+        for (k, v) in &bag.fields {
+            map.insert(k.clone(), v.clone());
+        }
+        for (k, file) in &bag.files {
+            map.entry(k.clone())
+                .or_insert_with(|| file.filename.clone());
+        }
+        return Ok(map);
+    }
+
     if (ct.contains("json") || ct.is_empty())
         && let Ok(serde_json::Value::Object(obj)) =
             serde_json::from_slice::<serde_json::Value>(body)
@@ -595,7 +610,7 @@ impl From<crate::core::validate::ValidationError> for ActionError {
                 errors.insert(field.clone(), first.clone());
             }
         }
-        let message = err.first().unwrap_or("validation failed").to_string();
+        let message = err.first().unwrap_or("validation.failed").to_string();
         if errors.is_empty() {
             errors.insert("_".into(), message.clone());
         }
@@ -661,3 +676,47 @@ pub async fn finalize_action(wants_navigation: bool, resp: Response) -> Response
 }
 
 pub use inventory;
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use http::{HeaderMap, Method, Uri};
+
+    use super::*;
+
+    fn envelope_req(json: &str) -> Request {
+        Request::new(
+            Method::POST,
+            Uri::from_static("/api/a"),
+            HeaderMap::new(),
+            Bytes::from(json.to_owned()),
+        )
+    }
+
+    #[test]
+    fn envelope_requires_timestamp() {
+        let req = envelope_req(r#"{"t":"deadbeef","i":{}}"#);
+        let err = peel_envelope(&req).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn envelope_rejects_stale_timestamp() {
+        let req = envelope_req(r#"{"t":"deadbeef","i":{},"ts":1}"#);
+        let err = peel_envelope(&req).unwrap_err();
+        assert_eq!(err.status(), StatusCode::GONE);
+    }
+
+    #[test]
+    fn envelope_accepts_fresh_timestamp() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let req = envelope_req(&format!(r#"{{"t":"deadbeef","i":{{"x":1}},"ts":{ts}}}"#));
+        let (token, body) = peel_envelope(&req)
+            .unwrap_or_else(|resp| panic!("expected fresh envelope, got {}", resp.status()));
+        assert_eq!(token, "deadbeef");
+        assert!(String::from_utf8(body).unwrap().contains("x"));
+    }
+}

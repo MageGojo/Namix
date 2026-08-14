@@ -1,6 +1,6 @@
 //! 发帖表单（Form Request）。
 
-use namix::prelude::*;
+use crate::prelude::*;
 
 #[derive(Clone, Copy, Debug, FormField)]
 pub enum PostForm {
@@ -18,7 +18,7 @@ pub struct PostRequest {
 
 impl FormRequest for PostRequest {
     fn redirect_to() -> FormRedirect {
-        FormRedirect::Named("posts")
+        FormRedirect::named(AppRoute::Posts)
     }
 
     fn from_values(req: &Request) -> Result<Self, ValidationError> {

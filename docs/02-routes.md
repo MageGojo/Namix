@@ -1,9 +1,12 @@
 # 路由
 
-业务路由集中在 `app/src/routes/web.rs`。命名路由会生成：
+业务路由集中在 `app/src/routes/web.rs`。`name: "login"` 会生成三份同一契约：
 
-- Rust：`route::main::login`（`app/src/route.rs` → 编译期生成）
-- TypeScript：`route.login()`（运行时写到 `views/routes.ts`）
+- Rust 枚举：`AppRoute::Login`（`app/src/route.rs`，编译期）
+- Rust 别名：`route::main::login`（与枚举同一值）
+- TypeScript：`route.login()` / `AppRoute.Login`（`views/routes.ts`：启动或 `nx export routes` 时写出，与上条时间线不一致）
+
+不要把枚举命名成 `Route`：`Route` 已经是 `Route::get` 构建器。入门步骤见 [START.md](./START.md)。
 
 ---
 
@@ -66,42 +69,70 @@ Route::get(path, handler)
 
 支持的方法：`get` / `post` / `put` / `patch` / `delete`（以框架 `Route` API 为准）。
 
+### 闭包路由
+
+短响应不必单独写控制器。同步闭包即可（对齐 Laravel 的 `Route::get('/greeting', fn () => 'Hello World')`）：
+
+```rust
+Route::get("/greeting", || "Hello World")
+    .name("greeting")
+    .register()
+
+// 或写进 routes!
+GET "/greeting" => || "Hello World", name: "greeting",
+GET "/hi/:name" => |req: Request| format!("Hello {}", req.param_or("name", "world")),
+    name: "hi",
+```
+
+返回 `&'static str` / `String` / `Response` / `Result<_, AppError>`。读库、渲染页面仍用 `async fn` 控制器。
+
+PHP 的 `[UserController::class, 'index']` 在 Rust 里就是模块函数：`GET "/users" => users::index`。CRUD 七件套用 `resource("users", UsersController)`（见下 §4）。不要再造一份 Class + 方法名数组。
+
 ---
 
 ## 2. 命名规则
 
-| 名字 | Rust | TypeScript |
-|------|------|------------|
-| `"home"` | `route::main::home` | `route.home()` |
-| `"login"` | `route::main::login` | `route.login()` |
-| `"me.submit"` | `route::main::me_submit` 一类生成名* | `route.me.submit()` |
-| `"posts"` | `route::main::posts` | `route.posts()` |
+| `name:` | Rust | TypeScript |
+|---------|------|------------|
+| `"home"` | `AppRoute::Home` / `route::main::home` | `route.home()` / `AppRoute.Home` |
+| `"login"` | `AppRoute::Login` | `route.login()` / `AppRoute.Login` |
+| `"me.submit"` | `AppRoute::MeSubmit` / `route::main::me_submit` | `route.me.submit()` / `AppRoute.MeSubmit` |
+| `"posts"` | `AppRoute::Posts` | `route.posts()` / `AppRoute.Posts` |
 
-\* Rust 侧具体标识符以生成文件为准；业务里用 `route::main::…` 即可，IDE 可补全。
+点号、下划线都会收成 PascalCase。业务文件用 `use crate::prelude::*` 即可拿到 `AppRoute` 与 `Page`。
 
 带路径参数：
 
 ```rust
-Route::get("/profile/:id", profile::show)
-    .middleware(require_login)
-    .name("profile")
-    .register()
+GET "/profile/:id" => profile::show, name: "profile",
 ```
 
+```rust
+AppRoute::Profile.to(&[("id", "5")])  // → Some("/profile/5")
+AppRoute::Home.href()                 // 无参路径
+```
+
+漏参数会得到 `None` 或拼出仍带 `:id` 的路径。计划收成 `AppRoute::profile("5")` 这类类型化参数，见 [NEXT.md](./NEXT.md) DX 节。
+
 ```ts
-route.profile({ id: 5 })   // → /profile/5（按生成器约定）
+import { route, AppRoute } from '../namix'
+
+route.profile({ id: 5 })
+route(AppRoute.Profile, { id: 5 })
 ```
 
 ### 在控制器里用命名路由
 
 ```rust
-use crate::route;
+use crate::prelude::*;
 
-req.redirect_ok_to(route::main::me)
-req.redirect_error_to(route::main::posts, "title required")
-req.redirect_guest_to(route::main::login)
-req.redirect_to(route::main::home)
+req.redirect_ok_to(AppRoute::Me)
+req.redirect_error_to(AppRoute::Posts, "title required")
+req.redirect_guest_to(AppRoute::Login)
+req.redirect_to(AppRoute::Home)
 ```
+
+`route::main::me` 仍可用，和 `AppRoute::Me` 是同一个枚举值。
 
 ---
 
@@ -215,9 +246,9 @@ import { Link } from '../namix'
 </form>
 ```
 
-原则：**路由不进页面 props**。永远 `import { route }`，不要把 URI 塞进 ViewData。
+原则：**路由不进页面 props**。永远 `import { route }`，不要把 URI 塞进 ViewData。`Link` 目前只收 `href: string`，所以写成 `<Link href={route.login()}>`。
 
-`routes.ts` 在服务启动时由目录 catalog 重写，文件头有 `@generated`——**不要手改**。
+`routes.ts` 在服务启动（或 `nx export routes`）时由目录 catalog 重写，文件头有 `@generated`——**不要手改**。Rust 侧 `AppRoute` 则在 `cargo build` 时已生成，两边时间线不一致；编译期写出 TS 路由是 [NEXT.md](./NEXT.md) 的第一刀。
 
 ---
 
@@ -226,8 +257,28 @@ import { Link } from '../namix'
 1. 写好 `controllers/xxx.rs` 里的 `async fn`
 2. 在 `web.rs` 的 `routes!` 表中注册 `METHOD "path" => controller, name: "…"`
 3. 若需登录：放入 `middleware: [require_login]` 路由组，或在单路由加 `middleware = [require_login]`
-4. 编译/启动一次，确认 `route::main::…` 与 `route.xxx()` 出现
+4. 编译/启动一次：Rust `AppRoute::…` 在 cargo 后出现；TS `route.xxx()` 要等启动或 `nx export routes`
 5. 页面或表单里用命名路由，避免硬编码路径
+
+---
+
+## 8. 可选：HTML 错误页
+
+不注册时，浏览器未匹配路由和 `AppError` 仍是框架通用 HTML；JSON / `#[server]` 始终 `{ error, message, errors }`。
+
+```rust
+pub fn routes() -> Router {
+    routes! { /* 业务路由 */ }
+        .error_page(404, errors::page)     // 只覆盖 404
+        .error_pages(errors::page)         // 403 / 500 / 429 … 共用；具体状态优先
+}
+```
+
+控制器里用 `req.not_found()` / `req.forbidden()` / `req.error_response(status, msg)`，不要用自由函数 `not_found()`（那是纯文本，看不到自定义页）。
+
+骨架：`nx make error` 或 `nx make error 404`。示例见 `app/src/controllers/errors.rs`。
+
+也可以写在 `Boot::error_page`；两边都写时 **`web.rs` 优先**（`TestClient` 也只看路由表）。
 
 ---
 
@@ -239,4 +290,5 @@ import { Link } from '../namix'
 | 登录 POST 与 `#[server]` 重复 | `web.rs` 只留 GET |
 | 名字写了但不 `.name()` | 生成表没有该项，`redirect_to` / TS 都找不到 |
 | `me.submit` 在 TS 当扁平函数 | 用 `route.me.submit()` 嵌套调用 |
-| 硬编码 `"/me"` | 优先 `route.me()` / `route::main::me`（redirect 字符串有时例外，如 Action 返回给前端） |
+| 硬编码 `"/me"` | 优先 `route.me()` / `AppRoute::Me`（redirect 字符串有时例外，如 Action 返回给前端） |
+| 自定义了 404 仍看到纯文本 | 用 `req.not_found()`，并在 `routes()` 上 `.error_page` / `.error_pages` |

@@ -214,11 +214,13 @@ pub fn run(project: &Project, with_compile: bool) -> Result<(), String> {
         checks.push(ok("Cargo namix/db", "未连库（lean 默认）"));
     }
 
-    for bin in ["toasty", "seed"] {
+    for bin in ["toasty", "seed", "work"] {
         let path = project.app_dir.join(format!("src/bin/{bin}.rs"));
         if path.is_file() {
             checks.push(ok(&format!("bin/{bin}"), "存在"));
-        } else if db_enabled || (*bin == *"seed" && feature_enabled(&toml, "seeders")) {
+        } else if bin == "work" {
+            checks.push(ok("bin/work", "可选 — nx work 需要 app --bin work"));
+        } else if db_enabled || (bin == "seed" && feature_enabled(&toml, "seeders")) {
             checks.push(fail(
                 &format!("bin/{bin}"),
                 "缺失 — 无法 nx migrate / nx seed",
@@ -267,6 +269,16 @@ pub fn run(project: &Project, with_compile: bool) -> Result<(), String> {
         checks.push(ok("src/route.rs", "命名路由入口"));
     } else {
         checks.push(warn("src/route.rs", "缺失 — .name(route::…) 无法编译"));
+    }
+    if feature_enabled(&toml, "pages") {
+        if project.src_dir().join("view.rs").is_file() {
+            checks.push(ok("src/view.rs", "页面名（Page::Home / view::home）"));
+        } else {
+            checks.push(warn(
+                "src/view.rs",
+                "缺失 — cargo check 后 namix-build 会生成；或在 lib.rs 加 pub mod view",
+            ));
+        }
     }
 
     if with_compile {

@@ -5,4 +5,7 @@
 //! - `validators` / `events` / `listeners` — 表单与副作用
 
 include!("namix_modules.rs");
+pub mod facades;
+pub mod prelude;
 pub mod route;
+pub mod view;

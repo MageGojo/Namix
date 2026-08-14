@@ -3,18 +3,46 @@
 //! 业务更推荐 [`FormRequest`]：校验失败自动回表单页 + flash，控制器只拿结构体。
 
 mod form;
+mod presence;
 mod rules;
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use http::StatusCode;
 
 pub use form::{FormRedirect, FormRequest, validator as form_validator};
+pub use presence::{
+    PresenceVerifier, clear_presence_verifier, install_presence_verifier, presence_exists,
+};
 pub use rules::Rule;
 
 use crate::core::request::Request;
 use crate::core::response::{IntoResponse, Response};
 use crate::core::routing::NamedRoute;
+use crate::core::upload::UploadedFile;
+
+type ErrorTranslator = fn(&str) -> String;
+static ERROR_TRANSLATOR: RwLock<Option<ErrorTranslator>> = RwLock::new(None);
+
+/// Install `namix::trans_error` so flash / HTML 校验失败显示文案而不是码。
+pub fn install_error_translator(translator: fn(&str) -> String) {
+    *ERROR_TRANSLATOR.write().expect("error translator lock") = Some(translator);
+}
+
+pub fn clear_error_translator() {
+    *ERROR_TRANSLATOR.write().expect("error translator lock") = None;
+}
+
+/// Look up a stable validation code. Without a translator, the code is returned as-is.
+pub fn translate_error(code: &str) -> String {
+    ERROR_TRANSLATOR
+        .read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|translator| translator(code)))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| code.to_string())
+}
 
 /// 验证字段：用 enum 获得补全提示。
 ///
@@ -38,6 +66,7 @@ type CustomRule<'a> =
 #[derive(Debug, Clone)]
 pub struct Validated {
     values: HashMap<String, String>,
+    files: HashMap<String, UploadedFile>,
 }
 
 impl Validated {
@@ -59,6 +88,18 @@ impl Validated {
 
     pub fn all(&self) -> &HashMap<String, String> {
         &self.values
+    }
+
+    pub fn file(&self, key: &str) -> Option<&UploadedFile> {
+        self.files.get(key)
+    }
+
+    pub fn file_field<F: Field>(&self, field: F) -> Option<&UploadedFile> {
+        self.file(field.name())
+    }
+
+    pub fn files(&self) -> &HashMap<String, UploadedFile> {
+        &self.files
     }
 
     /// 读取站内跳转路径；外部 URL、`//host` 等返回默认值。
@@ -93,7 +134,10 @@ impl ValidationError {
     }
 
     pub fn redirect(self, to: impl AsRef<str>) -> Response {
-        let msg = self.first().unwrap_or("validation failed");
+        let msg = self
+            .first()
+            .map(translate_error)
+            .unwrap_or_else(|| translate_error("validation.failed"));
         Response::redirect_see_other(to.as_ref()).with_flash_error(msg)
     }
 
@@ -115,7 +159,10 @@ impl ValidationError {
     }
 
     pub fn redirect_to<R: NamedRoute>(self, req: &Request, route: R) -> Response {
-        let msg = self.first().unwrap_or("validation failed");
+        let msg = self
+            .first()
+            .map(translate_error)
+            .unwrap_or_else(|| translate_error("validation.failed"));
         use crate::core::controller::Controller;
         req.redirect_error_to(route, msg)
     }
@@ -134,6 +181,7 @@ impl IntoResponse for ValidationError {
 /// 请求验证器。
 pub struct Validator<'a> {
     input: HashMap<String, String>,
+    files: HashMap<String, UploadedFile>,
     rules: Vec<(String, Vec<Rule>)>,
     customs: Vec<(String, CustomRule<'a>)>,
 }
@@ -142,6 +190,7 @@ impl<'a> Validator<'a> {
     pub fn from_request(req: &Request) -> Self {
         Self {
             input: collect_input(req),
+            files: req.files().clone(),
             rules: Vec::new(),
             customs: Vec::new(),
         }
@@ -156,7 +205,7 @@ impl<'a> Validator<'a> {
         self.rules(field, &[rule])
     }
 
-    /// 自定义验证：`|value, all| Ok(()) / Err("msg".into())`
+    /// 自定义验证：返回稳定码，例如 `Err("title.spam".into())`。
     pub fn custom<F, C>(mut self, field: F, f: C) -> Self
     where
         F: Field,
@@ -169,18 +218,18 @@ impl<'a> Validator<'a> {
     pub fn validate(self) -> Result<Validated, ValidationError> {
         let mut errors: HashMap<String, Vec<String>> = HashMap::new();
 
-        if let Some(msg) = self.input.get("__nx_error") {
+        if self.input.contains_key("__nx_error") {
             errors
-                .entry(crate::core::server_fn::SEAL_FIELD.to_string())
+                .entry("_".into())
                 .or_default()
-                .push(msg.clone());
+                .push("validation.payload".into());
             return Err(ValidationError { errors });
         }
 
         for (field, rules) in &self.rules {
             let value = self.input.get(field).map(String::as_str).unwrap_or("");
             for rule in rules {
-                if let Err(msg) = rule.check(field, value, &self.input) {
+                if let Err(msg) = rule.check(field, value, &self.input, &self.files) {
                     errors.entry(field.clone()).or_default().push(msg);
                     break; // 同字段遇错即停（Laravel 默认也可 stop on first）
                 }
@@ -195,7 +244,10 @@ impl<'a> Validator<'a> {
         }
 
         if errors.is_empty() {
-            Ok(Validated { values: self.input })
+            Ok(Validated {
+                values: self.input,
+                files: self.files,
+            })
         } else {
             Err(ValidationError { errors })
         }
@@ -207,13 +259,29 @@ fn collect_input(req: &Request) -> HashMap<String, String> {
     match crate::core::server_fn::expand_input_map(req) {
         Ok(map) => map,
         Err(msg) => {
+            tracing::debug!(error = %msg, "request input expansion failed");
             let mut map = HashMap::new();
-            map.insert(
-                crate::core::server_fn::SEAL_FIELD.to_string(),
-                String::new(),
-            );
-            map.insert("__nx_error".into(), msg);
+            map.insert("__nx_error".into(), String::new());
             map
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translate_error_uses_installed_hook() {
+        install_error_translator(|code| {
+            if code == "username.required" {
+                "请填写用户名".into()
+            } else {
+                code.into()
+            }
+        });
+        assert_eq!(translate_error("username.required"), "请填写用户名");
+        clear_error_translator();
+        assert_eq!(translate_error("username.required"), "username.required");
     }
 }

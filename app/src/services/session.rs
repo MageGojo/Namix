@@ -29,6 +29,8 @@ pub struct LoginUser {
     pub id: u64,
     pub username: String,
     pub is_vip: bool,
+    pub role: String,
+    pub email_verified: bool,
     /// 内部原始 session id；不应回显到页面或 API。
     pub session_id: String,
 }
@@ -174,8 +176,10 @@ impl SessionService {
         };
         Ok(Some(LoginUser {
             id: record.user_id,
-            username: record.username,
+            username: record.username.clone(),
             is_vip: record.is_vip,
+            role: record.role().to_string(),
+            email_verified: record.email_verified,
             session_id: id,
         }))
     }
@@ -199,7 +203,14 @@ impl SessionService {
         user: &User,
         ttl: Duration,
     ) -> Result<AuthSession, AppError> {
-        let record = AuthSession::with_ttl(user.id, user.username.clone(), user.is_vip, ttl);
+        let record = AuthSession::with_actor(
+            user.id,
+            user.username.clone(),
+            user.is_vip,
+            user.role.clone(),
+            user.email_verified_at.is_some(),
+            ttl,
+        );
         self.store().put(id, &record)?;
         Ok(record)
     }
@@ -322,6 +333,7 @@ mod tests {
             password_hash: "ignored".into(),
             name: "Alice".into(),
             is_vip: false,
+            role: "user".into(),
             email_verified_at: None,
             created_at: jiff::Timestamp::UNIX_EPOCH,
             updated_at: jiff::Timestamp::UNIX_EPOCH,

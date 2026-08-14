@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::middleware::extract::AuthUser;
 use crate::models::user::User;
+use crate::view;
 
 #[derive(Debug, Clone, Serialize, ViewData)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +21,7 @@ pub struct ProfilePage {
 
 pub async fn show(req: Request, Path(id): Path<u64>, user: AuthUser) -> Response {
     let Some(db_user) = User::find(id).await else {
-        return not_found();
+        return req.not_found();
     };
     let profile = db_user.load_profile().await;
     let posts = db_user.load_posts().await;
@@ -31,7 +32,7 @@ pub async fn show(req: Request, Path(id): Path<u64>, user: AuthUser) -> Response
 
     let post_titles: Vec<String> = posts.into_iter().map(|p| p.title).collect();
 
-    req.view("profile")
+    req.view(view::profile)
         .ssr()
         .title(&display_name)
         .data(ProfilePage {

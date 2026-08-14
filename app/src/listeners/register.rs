@@ -5,12 +5,26 @@
 use namix::prelude::*;
 
 use crate::events::user_registered::UserRegistered;
+use crate::services::email_verification::EmailVerificationService;
 
 /// 挂上本文件全部监听器。
 pub fn all() {
-    // 欢迎邮件（Mail 门面；当前 log/file 驱动会落 outbox）
     listen(|e: &UserRegistered| {
-        let to = format!("{}@users.namix.local", e.username);
+        match EmailVerificationService.notify(e.user_id, &e.email) {
+            Ok(()) => Reply::ok(format!("verify mail → {}", e.email)),
+            Err(err) => {
+                namix::log::error!("verify mail failed: {err}");
+                Reply::err(format!("verify mail failed: {err}"))
+            }
+        }
+    });
+
+    listen(|e: &UserRegistered| {
+        let to = if e.email.trim().is_empty() {
+            format!("{}@users.namix.local", e.username)
+        } else {
+            e.email.clone()
+        };
         match Mail::send(
             MailMessage::new(to, "欢迎加入 Namix")
                 .text(format!("你好 {}，注册成功（user#{}）。", e.username, e.user_id)),
@@ -23,15 +37,8 @@ pub fn all() {
         }
     });
 
-    // 审计日志
     listen(|e: &UserRegistered| {
         namix::log::info!("audit: user registered #{} ({})", e.user_id, e.username);
         Reply::ok(format!("audit · registered {}", e.username))
-    });
-
-    // 初始化默认资料占位（示意）
-    listen(|e: &UserRegistered| {
-        namix::log::info!("profile: seed defaults for #{}", e.user_id);
-        Reply::ok(format!("profile seed · #{}", e.user_id))
     });
 }

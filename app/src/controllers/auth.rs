@@ -18,6 +18,7 @@ use crate::services::session::{
 use crate::services::user::UserService;
 use crate::validators::login_form::LoginRequest;
 use crate::validators::register_form::RegisterRequest;
+use crate::view;
 
 #[derive(Debug, Clone, Serialize, ViewData)]
 #[serde(rename_all = "camelCase")]
@@ -37,7 +38,7 @@ pub struct LoginPage {
 // ── GET 页面 ─────────────────────────────────────────────────
 
 pub async fn register(req: Request) -> Response {
-    req.view("register")
+    req.view(view::register)
         .island()
         .title("注册")
         .data(RegisterPage {
@@ -49,7 +50,7 @@ pub async fn register(req: Request) -> Response {
 pub async fn login(req: Request) -> Response {
     let registered_count = User::list().await.len() as u64;
 
-    req.view("login")
+    req.view(view::login)
         .island()
         .title("登录")
         .data(LoginPage {
@@ -108,7 +109,7 @@ pub struct PasswordResetOk {
 pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
     let form = RegisterRequest::from_values(&req)?;
     let user = UserService::new()
-        .register(&form.username, &form.password)
+        .register(&form.username, &form.password, &form.email)
         .await?;
 
     let sessions = SessionService::new();
@@ -117,8 +118,19 @@ pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, AppError>
     let outcome = dispatch(UserRegistered {
         user_id: user.id,
         username: user.username.clone(),
+        email: form.email.clone(),
     });
     log_outcome("register", &outcome);
+
+    if let Err(error) = dispatch_job_later(
+        crate::jobs::welcome_ping::WelcomePing {
+            username: user.username.clone(),
+            email: form.email.clone(),
+        },
+        std::time::Duration::from_secs(5),
+    ) {
+        namix::log::warn!("welcome ping queue failed: {error}");
+    }
 
     Ok(ActionOk::new(AuthOk::with_tokens("/me", &tokens))
         .with_cookie_options(
@@ -140,11 +152,7 @@ pub async fn login_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
         .authenticate(&form.username, &form.password)
         .await
     else {
-        // 字段级错误：前端可 mapErrors 成中文，或直接展示
-        return Err(AppError::validation(
-            "password",
-            "invalid username or password",
-        ));
+        return Err(AppError::validation("password", "auth.failed"));
     };
 
     let client_ip = req
@@ -175,10 +183,10 @@ pub async fn login_action(req: Request) -> Result<ActionOk<AuthOk>, AppError> {
 
 /// 经典表单退出；POST 会经过 Origin + CSRF 校验。
 pub async fn logout_page(req: Request) -> Response {
-    if let Some(sid) = session_id_from(&req) {
-        if let Err(error) = SessionService::new().revoke(&sid) {
-            return error.into_response_for(&req);
-        }
+    if let Some(sid) = session_id_from(&req)
+        && let Err(error) = SessionService::new().revoke(&sid)
+    {
+        return error.into_response_for(&req);
     }
     Response::redirect_see_other("/")
         .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
@@ -222,7 +230,7 @@ pub async fn password_reset_request_action(
         .unwrap_or("")
         .trim();
     if username.is_empty() {
-        return Err(AppError::validation("username", "username is required"));
+        return Err(AppError::validation("username", "username.required"));
     }
 
     if let Some(user) = User::find_by_username(username).await
@@ -251,17 +259,14 @@ pub async fn password_reset_confirm_action(req: Request) -> Result<ActionOk<Auth
     let token = input.get("token").map(String::as_str).unwrap_or("").trim();
     let password = input.get("password").map(String::as_str).unwrap_or("");
     if token.is_empty() {
-        return Err(AppError::validation("token", "reset token is required"));
+        return Err(AppError::validation("token", "token.required"));
     }
     if password.len() < 12 {
-        return Err(AppError::validation(
-            "password",
-            "password must be at least 12 characters",
-        ));
+        return Err(AppError::validation("password", "password.min"));
     }
     let user_id = PasswordResetService
         .consume(token)
-        .ok_or_else(|| AppError::validation("token", "reset token is invalid or expired"))?;
+        .ok_or_else(|| AppError::validation("token", "token.invalid"))?;
     UserService::new()
         .reset_password(user_id, password)
         .await
@@ -271,6 +276,85 @@ pub async fn password_reset_confirm_action(req: Request) -> Result<ActionOk<Auth
     Ok(ActionOk::new(AuthOk::redirect_only("/login"))
         .with_clear_cookie_options(SESSION_COOKIE, SessionService::cookie_options())
         .with_clear_cookie(LEGACY_SESSION_COOKIE))
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifyOk {
+    pub ok: bool,
+}
+
+#[server(name = "resend_verification")]
+pub async fn resend_verification_action(req: Request) -> Result<ActionOk<VerifyOk>, AppError> {
+    let user = req
+        .get::<crate::services::session::LoginUser>()
+        .ok_or(AppError::Unauthenticated)?;
+    let Some(db_user) = User::find(user.id).await else {
+        return Err(AppError::Unauthenticated);
+    };
+    if db_user.email_verified_at.is_some() {
+        return Ok(ActionOk::new(VerifyOk { ok: true }));
+    }
+    let email = db_user
+        .load_profile()
+        .await
+        .map(|p| p.email)
+        .unwrap_or_default();
+    crate::services::email_verification::EmailVerificationService.notify(user.id, &email)?;
+    Ok(ActionOk::new(VerifyOk { ok: true }))
+}
+
+pub async fn oauth_redirect(req: Request) -> Response {
+    let name = req.param_or("provider", "dev");
+    let Some(provider) = namix::oauth::provider(name) else {
+        return req.not_found();
+    };
+    Response::redirect(provider.authorize_url(&req, "namix"))
+}
+
+pub async fn oauth_callback(req: Request) -> Response {
+    let name = req.param_or("provider", "dev");
+    let Some(provider) = namix::oauth::provider(name) else {
+        return req.not_found();
+    };
+    let social = match provider.user_from_callback(&req) {
+        Ok(user) => user,
+        Err(error) => return error.into_response_for(&req),
+    };
+    let users = UserService::new();
+    let user = match User::find_by_username(&social.username).await {
+        Some(user) => user,
+        None => {
+            let password = format!("Oauth1!{}", social.provider_id);
+            match users
+                .register(
+                    &social.username,
+                    &password,
+                    social.email.as_deref().unwrap_or(""),
+                )
+                .await
+            {
+                Ok(user) => {
+                    if let Err(error) = users.mark_email_verified(user.id).await {
+                        namix::log::warn!("oauth verify mark failed: {error}");
+                    }
+                    user
+                }
+                Err(error) => return error.into_response_for(&req),
+            }
+        }
+    };
+    let sessions = SessionService::new();
+    let tokens = match sessions.rotate_pair(session_id_from(&req).as_deref(), &user) {
+        Ok(tokens) => tokens,
+        Err(error) => return error.into_response_for(&req),
+    };
+    Response::redirect_see_other("/me")
+        .with_cookie_options(
+            SESSION_COOKIE,
+            &tokens.cookie_token,
+            SessionService::cookie_options(),
+        )
+        .with_clear_cookie(LEGACY_SESSION_COOKIE)
 }
 
 fn log_outcome(kind: &str, outcome: &Outcome) {

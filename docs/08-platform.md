@@ -79,6 +79,28 @@ let _worker = q.clone().worker(); // 或 work_once()
 - 骨架：`nx make job WelcomeMail`。
 - HTTP/业务域仍返回具体 `AppError`，不要把 `anyhow` 透出控制器。
 
+重启不丢活用 **durable queue**（不要 Redis）：
+
+```toml
+[queue]
+driver = "file"            # memory | file | sqlite
+path = "./storage/queue"
+```
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct WelcomePing { pub email: String }
+impl QueuedJob for WelcomePing {
+    const NAME: &'static str = "welcome_ping";
+    fn handle(self) -> JobFuture { Box::pin(async move { Ok(()) }) }
+}
+
+register_job::<WelcomePing>();
+dispatch_job_later(WelcomePing { email: "a@b.c".into() }, Duration::from_secs(5))?;
+```
+
+`nx work` → `cargo run -p app --bin work` 循环消费。HTTP 进程不自动跑 worker。
+
 ---
 
 ## 5. Storage
@@ -127,13 +149,52 @@ let res = client
 
 ---
 
+## 7. 出站 HTTP（调第三方）
+
+框架 **没有** Laravel `Http::get` 门面。在 **服务器进程**里调外部 API：业务包加 `reqwest`，写在 `services/`，控制器 / `#[server]` 只 `await` Service。
+
+```toml
+# app/Cargo.toml
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+```
+
+```rust
+let body: serde_json::Value = reqwest::Client::new()
+    .get("https://api.example.com/v1/foo")
+    .bearer_auth(&std::env::var("FOO_TOKEN").map_err(AppError::internal)?)
+    .timeout(Duration::from_secs(8))
+    .send()
+    .await
+    .map_err(AppError::internal)?
+    .error_for_status()
+    .map_err(AppError::internal)?
+    .json()
+    .await
+    .map_err(AppError::internal)?;
+```
+
+| 要点 | |
+|------|--|
+| 密钥 | 环境变量，不要写进仓库 `namix.toml` |
+| 错误 | `AppError::internal`；浏览器只见通用 500 |
+| 返回给前台 | 只映射展示字段，见 [控制器 · 在 Server Action 里调第三方](./01-controllers.md#在-server-action-里调第三方) |
+| 慢 / 可失败 | `QueuedJob` + `nx work`，别堵在这次请求上 |
+| 邮件 / 短信网关 | 走 `Mail` / `Sms` 的 `register_transport`，HTTP 写在 transport 里 |
+
+不要在 TS 里 `fetch('https://api.example.com')` 带 Key。等出现多个真实出站且需要 `Http::fake()` 时再考虑框架门面；见 [NEXT.md](./NEXT.md)「先不做」。
+
+---
+
 ## 骨架命令
 
 ```bash
+nx make page Notes
+nx make error
 nx make resource Posts
 nx make policy Post
 nx make job SendDigest
 nx make mail Welcome
 nx make notification InvoicePaid
 nx make test posts_update_forbidden
+nx clean                 # 删 target / node_modules / public/build
 ```

@@ -32,6 +32,10 @@ pub struct NamixToml {
     #[serde(default)]
     pub sms: SmsSection,
     #[serde(default)]
+    pub queue: QueueSection,
+    #[serde(default)]
+    pub i18n: I18nSection,
+    #[serde(default)]
     pub security: SecuritySection,
     #[serde(default)]
     pub session: SessionSection,
@@ -334,6 +338,73 @@ fn default_sms_from() -> String {
 }
 fn default_sms_store() -> String {
     "./storage/sms".into()
+}
+
+/// `[queue]` — durable jobs for `nx work` (no Redis).
+///
+/// ```toml
+/// [queue]
+/// driver = "file"            # memory | file | sqlite
+/// path = "./storage/queue"   # file dir, or sqlite file / dir
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueueSection {
+    #[serde(default = "default_queue_driver")]
+    pub driver: String,
+    #[serde(default = "default_queue_path")]
+    pub path: String,
+}
+
+impl Default for QueueSection {
+    fn default() -> Self {
+        Self {
+            driver: default_queue_driver(),
+            path: default_queue_path(),
+        }
+    }
+}
+
+impl QueueSection {
+    pub fn sqlite_path(&self) -> std::path::PathBuf {
+        let path = std::path::PathBuf::from(&self.path);
+        if path.extension().is_some() {
+            path
+        } else {
+            path.with_extension("sqlite")
+        }
+    }
+}
+
+fn default_queue_driver() -> String {
+    "file".into()
+}
+fn default_queue_path() -> String {
+    "./storage/queue".into()
+}
+
+/// `[i18n]` — JSON dictionaries under `lang/`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct I18nSection {
+    #[serde(default = "default_i18n_locale")]
+    pub locale: String,
+    #[serde(default = "default_i18n_path")]
+    pub path: String,
+}
+
+impl Default for I18nSection {
+    fn default() -> Self {
+        Self {
+            locale: default_i18n_locale(),
+            path: default_i18n_path(),
+        }
+    }
+}
+
+fn default_i18n_locale() -> String {
+    "zh-CN".into()
+}
+fn default_i18n_path() -> String {
+    "./lang".into()
 }
 
 /// `[database]` — Toasty 连接与开发期 schema。

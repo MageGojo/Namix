@@ -149,12 +149,9 @@ impl QueryOptions {
 fn parse_positive(raw: &str, name: &str, min: usize, max: usize) -> Result<usize, AppError> {
     let value = raw
         .parse::<usize>()
-        .map_err(|_| AppError::validation(name, "must be a positive integer"))?;
+        .map_err(|_| AppError::validation(name, format!("{name}.integer")))?;
     if !(min..=max).contains(&value) {
-        return Err(AppError::validation(
-            name,
-            format!("must be between {min} and {max}"),
-        ));
+        return Err(AppError::validation(name, format!("{name}.between")));
     }
     Ok(value)
 }

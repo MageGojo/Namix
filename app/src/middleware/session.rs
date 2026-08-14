@@ -25,3 +25,16 @@ pub async fn hydrate(mut req: Request, next: Next) -> Response {
 pub fn current(req: &Request) -> Option<&LoginUser> {
     req.get::<LoginUser>()
 }
+
+/// Laravel `$request->user()`：`req.user()` → `Option<&LoginUser>`。
+///
+/// 路由参数里写 `user: AuthUser` 更合适（未登录直接跳登录页）。
+pub trait RequestAuth {
+    fn user(&self) -> Option<&LoginUser>;
+}
+
+impl RequestAuth for Request {
+    fn user(&self) -> Option<&LoginUser> {
+        current(self)
+    }
+}

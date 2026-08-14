@@ -1,10 +1,6 @@
 import { useCallback, useRef, useState, type FormEvent } from 'react'
-import {
-  ActionException,
-  parseActionFailure,
-  translateErrors,
-  type FieldErrors,
-} from './actionError'
+import { ActionException, parseActionFailure, type FieldErrors } from './actionError'
+import { t } from './i18n'
 import { router, type VisitOptions } from './router'
 
 type ActionResult = {
@@ -20,11 +16,11 @@ export type SubmitOpts<TResult = ActionResult> = VisitOptions & {
   /** 失败回调；可在此改文案 / toast */
   onError?: (errors: FieldErrors, err: ActionException) => void
   /**
-   * 自定义字段错误映射（在 messages 翻译之后）。
-   * 返回值会写入 `form.errors`。
+   * 自定义字段错误映射（在 `t()` / `messages` 翻译之前）。
+   * 收到的是稳定码，返回值仍应是码。
    */
   mapErrors?: (errors: FieldErrors, err: ActionException) => FieldErrors
-  /** 按服务端原文精确替换，例如 `{ 'username already taken': '用户名已被占用' }` */
+  /** 按稳定码覆盖文案，例如 `{ 'username.taken': '换一个用户名' }` */
   messages?: Record<string, string>
   /** 收到 redirect 时是否软跳转（默认 true） */
   followRedirect?: boolean
@@ -38,7 +34,7 @@ export type SubmitOpts<TResult = ActionResult> = VisitOptions & {
  * ```ts
  * const form = useForm({ username: '', password: '' })
  * <form onSubmit={form.onSubmit(login, {
- *   messages: { 'invalid username or password': '账号或密码不对' },
+ *   messages: { 'auth.failed': '账号或密码不对' },
  *   mapErrors: (e) => ({ ...e, password: e.password ?? e._ }),
  * })}>
  * ```
@@ -109,11 +105,14 @@ export function useForm<T extends Record<string, unknown>>(initial: T) {
   function applyFailure(err: unknown, opts: SubmitOpts) {
     const ex = err instanceof ActionException ? err : parseActionFailure(err)
     let bag = { ...ex.errors }
-    if (opts.messages) bag = translateErrors(bag, opts.messages)
     if (opts.mapErrors) bag = opts.mapErrors(bag, ex)
-    setErrors(bag)
+    const resolved: FieldErrors = {}
+    for (const [field, code] of Object.entries(bag)) {
+      resolved[field] = opts.messages?.[code] ?? t(code)
+    }
+    setErrors(resolved)
     setResponse(ex.response)
-    opts.onError?.(bag, ex)
+    opts.onError?.(resolved, ex)
     return ex
   }
 

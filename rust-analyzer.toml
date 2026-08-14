@@ -1,0 +1,10 @@
+[check]
+command = "clippy"
+allTargets = true
+workspace = false
+
+[cargo]
+allFeatures = true
+
+[procMacro]
+enable = true

@@ -3,6 +3,8 @@
 use namix::prelude::*;
 use serde::Serialize;
 
+use crate::view;
+
 #[derive(Debug, Clone, Serialize, ViewData)]
 #[serde(rename_all = "camelCase")]
 pub struct DemoItem {
@@ -61,7 +63,7 @@ fn page_data(page: u32, title: impl Into<String>) -> DemoPage {
 
 pub async fn ssr(req: Request) -> Response {
     let data = page_data(page_num(&req), "纯渲染分页演示");
-    req.view("demo")
+    req.view(view::demo)
         .ssr()
         .title(data.title.clone())
         .data(data)
@@ -82,7 +84,7 @@ pub async fn island(req: Request) -> Response {
         })
         .collect();
 
-    req.view("island")
+    req.view(view::island)
         .island()
         .title(data.title.clone())
         .data(data)

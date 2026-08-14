@@ -1,13 +1,12 @@
 import { AppNav } from '../components/nav'
 import type { PostsPage } from '../generated/PostsPage'
 import { PostForm } from '../generated/fields'
-import { CsrfField } from '../namix'
-import { route } from '../routes'
+import { CsrfField, route } from '../namix'
 import type { PageProps } from '../types'
 
 type Props = PageProps<PostsPage>
 
-export default function Posts({ title, username, error, items = [] }: Props) {
+export default function Posts({ title, username, error, items = [], csrfToken }: Props) {
   return (
     <main className="min-h-screen bg-gradient-to-b from-zinc-50 to-teal-50/30">
       <div className="mx-auto max-w-xl px-6 py-14">
@@ -20,7 +19,7 @@ export default function Posts({ title, username, error, items = [] }: Props) {
         ) : null}
 
         <form method="post" action={route.posts.submit()} className="mt-8 space-y-4">
-          <CsrfField />
+          <CsrfField token={csrfToken} />
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-zinc-700">标题</span>
             <input
@@ -48,7 +47,7 @@ export default function Posts({ title, username, error, items = [] }: Props) {
           {items.map((p) => (
             <article key={p.id} className="space-y-3 py-4">
               <form method="post" action={route.posts.update({ id: p.id })} className="space-y-3">
-                <CsrfField />
+                <CsrfField token={csrfToken} />
                 <label className="block space-y-1.5">
                   <span className="text-sm font-medium text-zinc-700">标题</span>
                   <input
@@ -76,7 +75,7 @@ export default function Posts({ title, username, error, items = [] }: Props) {
                 </div>
               </form>
               <form method="post" action={route.posts.destroy({ id: p.id })}>
-                <CsrfField />
+                <CsrfField token={csrfToken} />
                 <button
                   type="submit"
                   className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"

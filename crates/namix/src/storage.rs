@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -189,8 +189,7 @@ impl Storage {
         expires_at: u64,
         signature: &str,
     ) -> StorageResult<()> {
-        self.driver
-            .verify_temporary_url(key, expires_at, signature)
+        self.driver.verify_temporary_url(key, expires_at, signature)
     }
 }
 
@@ -344,9 +343,7 @@ impl LocalStorage {
 
         let target = parent.join(file_name);
         match fs::symlink_metadata(&target) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                Err(StorageError::InvalidKey)
-            }
+            Ok(metadata) if metadata.file_type().is_symlink() => Err(StorageError::InvalidKey),
             Ok(_) => Ok(target),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(target),
             Err(error) => Err(StorageError::Io(error)),
@@ -675,8 +672,8 @@ mod tests {
             .unwrap()
             .1
             .split('&')
-            .find_map(|pair| pair.split_once('='))
-            .filter(|(key, _)| *key == name)
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == name)
             .map(|(_, value)| value)
             .unwrap()
     }
@@ -714,7 +711,10 @@ mod tests {
 
         let storage = explicit_storage(&trusted_root);
         storage.put("safe/file.txt", b"inside").unwrap();
-        assert_eq!(fs::read(real_root.join("safe/file.txt")).unwrap(), b"inside");
+        assert_eq!(
+            fs::read(real_root.join("safe/file.txt")).unwrap(),
+            b"inside"
+        );
         assert!(matches!(
             storage.put("untrusted/file.txt", b"outside"),
             Err(StorageError::InvalidKey)
@@ -781,11 +781,7 @@ mod tests {
         tampered[0] = if tampered[0] == b'A' { b'B' } else { b'A' };
         let tampered = String::from_utf8(tampered).unwrap();
         assert!(matches!(
-            second.verify_temporary_url(
-                "reports/quarter 1.pdf",
-                temporary.expires_at,
-                &tampered
-            ),
+            second.verify_temporary_url("reports/quarter 1.pdf", temporary.expires_at, &tampered),
             Err(StorageError::InvalidTemporaryUrlSignature)
         ));
         let _ = fs::remove_dir_all(dir);
@@ -801,15 +797,8 @@ mod tests {
             .verify_temporary_url_at("private/file.txt", expires_at, &signature, expires_at - 1)
             .unwrap();
         assert!(matches!(
-            storage.verify_temporary_url_at(
-                "private/file.txt",
-                expires_at,
-                &signature,
-                expires_at
-            ),
-            Err(StorageError::TemporaryUrlExpired {
-                expires_at: 10_000
-            })
+            storage.verify_temporary_url_at("private/file.txt", expires_at, &signature, expires_at),
+            Err(StorageError::TemporaryUrlExpired { expires_at: 10_000 })
         ));
         let _ = fs::remove_dir_all(dir);
     }

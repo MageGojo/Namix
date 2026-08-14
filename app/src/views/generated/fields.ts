@@ -23,11 +23,13 @@ export const ProfileForm = {
   DisplayName: "display_name" as const,
   Email: "email" as const,
   Bio: "bio" as const,
+  Avatar: "avatar" as const,
 } as const;
 export type ProfileFormField = (typeof ProfileForm)[keyof typeof ProfileForm];
 
 export const RegisterForm = {
   Username: "username" as const,
+  Email: "email" as const,
   Password: "password" as const,
   PasswordConfirmation: "password_confirmation" as const,
 } as const;

@@ -2,8 +2,11 @@
 /* views/pages/*.{tsx,jsx} + #[view] / req.view("…") → 页面注册表 */
 import type { ComponentType } from 'react'
 
+import AdminUsers from '../pages/admin_users'
 import Chat from '../pages/chat'
 import Demo from '../pages/demo'
+import EmailVerify from '../pages/email_verify'
+import Errors from '../pages/errors'
 import Home from '../pages/home'
 import Island from '../pages/island'
 import Login from '../pages/login'
@@ -14,10 +17,16 @@ import Profile from '../pages/profile'
 import Register from '../pages/register'
 
 export const pages: Record<string, ComponentType<Record<string, unknown>>> = {
+  'admin_users': AdminUsers as unknown as ComponentType<Record<string, unknown>>,
+  'admin_users/index': AdminUsers as unknown as ComponentType<Record<string, unknown>>,
   'chat': Chat as unknown as ComponentType<Record<string, unknown>>,
   'chat/index': Chat as unknown as ComponentType<Record<string, unknown>>,
   'demo': Demo as unknown as ComponentType<Record<string, unknown>>,
   'demo/index': Demo as unknown as ComponentType<Record<string, unknown>>,
+  'email_verify': EmailVerify as unknown as ComponentType<Record<string, unknown>>,
+  'email_verify/index': EmailVerify as unknown as ComponentType<Record<string, unknown>>,
+  'errors': Errors as unknown as ComponentType<Record<string, unknown>>,
+  'errors/index': Errors as unknown as ComponentType<Record<string, unknown>>,
   'home': Home as unknown as ComponentType<Record<string, unknown>>,
   'home/index': Home as unknown as ComponentType<Record<string, unknown>>,
   'island': Island as unknown as ComponentType<Record<string, unknown>>,

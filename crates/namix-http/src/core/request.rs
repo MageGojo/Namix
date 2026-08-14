@@ -1,7 +1,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 use super::routing::{IntoRouteName, NamedRoute, RouteCatalog};
+use super::upload::{MultipartBag, UploadedFile, is_multipart, parse_multipart};
 use super::validate::{Field, Rule, Validated, ValidationError, Validator};
 
 /// Peer address recorded by the HTTP server before proxy processing.
@@ -59,6 +60,10 @@ pub struct Request {
     store: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     /// 命名路由表（启动时注入）。
     routes: Option<Arc<RouteCatalog>>,
+    /// 解析过的 multipart（惰性，克隆共享）。
+    form_bag: Arc<OnceLock<MultipartBag>>,
+    /// query + body 合并后的输入袋（Laravel `$request->input`，惰性）。
+    inputs: Arc<OnceLock<HashMap<String, String>>>,
 }
 
 impl Request {
@@ -72,6 +77,8 @@ impl Request {
             attrs: HashMap::new(),
             store: HashMap::new(),
             routes: None,
+            form_bag: Arc::new(OnceLock::new()),
+            inputs: Arc::new(OnceLock::new()),
         }
     }
 
@@ -155,6 +162,11 @@ impl Request {
     }
 
     /// `Cookie: a=1; namix_user=alice` → `req.cookie("namix_user")`
+    /// CSRF token for SSR `ViewData` / 自绘 hidden input。中间件未跑时为空串。
+    pub fn csrf_token(&self) -> &str {
+        super::csrf::token(self).unwrap_or("")
+    }
+
     pub fn cookie(&self, name: &str) -> Option<&str> {
         let raw = self.header("cookie")?;
         for part in raw.split(';') {
@@ -235,7 +247,57 @@ impl Request {
 
     pub fn set_body(&mut self, body: impl Into<Bytes>) -> &mut Self {
         self.body = body.into();
+        self.form_bag = Arc::new(OnceLock::new());
+        self.inputs = Arc::new(OnceLock::new());
         self
+    }
+
+    fn input_map(&self) -> &HashMap<String, String> {
+        self.inputs
+            .get_or_init(|| crate::core::server_fn::expand_input_map(self).unwrap_or_default())
+    }
+
+    /// query + JSON / urlencoded / multipart 字段。对齐 Laravel `$request->all()`。
+    pub fn inputs(&self) -> &HashMap<String, String> {
+        self.input_map()
+    }
+
+    /// 对齐 Laravel `$request->input('title')`：query 与 body 合并，同名以 body 为准。
+    pub fn input(&self, name: &str) -> Option<&str> {
+        self.input_map().get(name).map(String::as_str)
+    }
+
+    pub fn input_or<'a>(&'a self, name: &str, default: &'a str) -> &'a str {
+        self.input(name).unwrap_or(default)
+    }
+
+    /// 对齐 Laravel `$request->ip()`。
+    pub fn ip(&self) -> Option<IpAddr> {
+        self.client_ip()
+    }
+
+    /// Parsed `multipart/form-data` fields and files (empty for other bodies).
+    pub fn form_bag(&self) -> &MultipartBag {
+        self.form_bag.get_or_init(|| {
+            let content_type = self.header_or("content-type", "");
+            if is_multipart(content_type) {
+                parse_multipart(&self.body, content_type).unwrap_or_default()
+            } else {
+                MultipartBag::default()
+            }
+        })
+    }
+
+    pub fn file(&self, name: &str) -> Option<&UploadedFile> {
+        self.form_bag().files.get(name)
+    }
+
+    pub fn files(&self) -> &HashMap<String, UploadedFile> {
+        &self.form_bag().files
+    }
+
+    pub fn form_input(&self, name: &str) -> Option<&str> {
+        self.form_bag().fields.get(name).map(String::as_str)
     }
 
     // ── Attr（字符串上下文）────────────────────────────────────
@@ -282,7 +344,7 @@ impl Request {
         self.get::<T>().cloned()
     }
 
-    /// Socket peer IP as installed by the Namix server.
+    /// Socket peer IP as installed by the Namix server. 也可用 [`Self::ip`]。
     pub fn client_ip(&self) -> Option<IpAddr> {
         self.get::<ClientIp>().map(|ClientIp(ip)| *ip)
     }
@@ -588,7 +650,10 @@ mod tests {
     #[test]
     fn query_decodes_percent_encoded_keys() {
         let request = request("/posts?filter%5Bstatus%5D=published");
-        assert_eq!(request.query("filter[status]").as_deref(), Some("published"));
+        assert_eq!(
+            request.query("filter[status]").as_deref(),
+            Some("published")
+        );
     }
 
     #[test]
@@ -609,5 +674,32 @@ mod tests {
         let error = request.json::<serde_json::Value>().unwrap_err();
         let app_error: super::super::error::AppError = error.into();
         assert_eq!(app_error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn input_merges_query_and_json_body() {
+        let mut request = Request::new(
+            Method::POST,
+            "/save?from=query".parse().expect("uri"),
+            HeaderMap::new(),
+            Bytes::from_static(br#"{"title":"hello"}"#),
+        );
+        request.set_header("content-type", "application/json");
+        assert_eq!(request.input("from"), Some("query"));
+        assert_eq!(request.input("title"), Some("hello"));
+        assert_eq!(request.input_or("missing", "x"), "x");
+    }
+
+    #[test]
+    fn input_reads_urlencoded_body() {
+        let mut request = Request::new(
+            Method::POST,
+            Uri::from_static("/save"),
+            HeaderMap::new(),
+            Bytes::from_static(b"title=namix&ok=1"),
+        );
+        request.set_header("content-type", "application/x-www-form-urlencoded");
+        assert_eq!(request.input("title"), Some("namix"));
+        assert_eq!(request.inputs().get("ok").map(String::as_str), Some("1"));
     }
 }

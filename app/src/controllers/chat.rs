@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::middleware::extract::AuthUser;
 use crate::services::chat::{ChatHub, ChatUser, ClientMsg, ServerMsg};
-use crate::services::session::{session_id_from, SessionService};
+use crate::view;
 
 #[derive(Debug, Clone, Serialize, ViewData)]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +17,7 @@ pub struct ChatPage {
 
 /// GET /chat — Island 页，浏览器连命名路由 `ws.chat`。
 pub async fn page(req: Request, user: AuthUser) -> Response {
-    req.view("chat")
+    req.view(view::chat)
         .island()
         .title("聊天室")
         .data(ChatPage {
@@ -103,8 +103,5 @@ pub async fn socket(req: Request, socket: WsSocket) {
 fn resolve_user(
     req: &Request,
 ) -> Result<Option<crate::services::session::LoginUser>, AppError> {
-    let Some(id) = session_id_from(req) else {
-        return Ok(None);
-    };
-    SessionService::new().resolve(&id)
+    Ok(req.get::<crate::services::session::LoginUser>().cloned())
 }

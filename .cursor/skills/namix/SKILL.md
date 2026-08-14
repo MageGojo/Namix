@@ -17,7 +17,7 @@ Namix = **一体全栈**（Rust 服务端 + 同仓 React 页面），不是前�
 - 交互写操作用 **`#[server]` → `POST /api/a`** 或 **经典 `POST` + FormRequest + CSRF**
 - TypeScript 在 `app/src/views/`，契约由 Rust 生成；**不要**另起 `frontend/` SPA 或独立 API 服务
 
-教学文档（source of truth）：`docs/README.md`（01–11 + FEATURES / ERRORS / SSR-RUST）。
+教学文档（source of truth）：`docs/START.md`（上手）+ `docs/README.md`（01–11 + FEATURES / ERRORS / SSR-RUST）。
 
 ## When this skill applies
 
@@ -32,9 +32,10 @@ Namix = **一体全栈**（Rust 服务端 + 同仓 React 页面），不是前�
 | 新建独立 `frontend/` / Next / Vite 根 SPA 调 REST | 页面放 `app/src/views/pages/`，由控制器渲染 |
 | 手写 `fetch('/api/posts')` + 自建 JSON API 当主路径 | `#[server]` + `generated/actions/*`，或经典表单 POST |
 | 在 TS 里再定义一份与 Rust 重复的 DTO | `#[derive(ViewData)]` / `FormField` → 用 `views/generated/*` |
-| 手改 `views/generated/**`、`routes.ts`（运行时生成） | 改 Rust 源，再 `cargo build` / 启动刷新 |
+| 手改 `views/generated/**`、`routes.ts`（启动时生成） | 改 Rust 源，再 `cargo build` / 启动刷新；`routes.ts` 现需 Boot 或 `nx export routes` |
 | props 塞 `userId` / `isVip` / roles / token | `AuthView` 服务端分支，只下发展示数据 |
 | 信表单里的 `user_id` 做授权 | `Post::find` + `authorize(&user, &PostPolicy, …)` |
+| 前端 `messages` 跟英文句子 | 校验失败返回 `username.taken`；文案写 `lang/*.json`，改 `Min(3)` 措辞不会断字典 |
 | 经典 POST 不带 CSRF | `<CsrfField />`；Action 客户端会自动带 |
 | 登出用 GET | `POST /logout` + CSRF（或 `logout` Action） |
 
@@ -47,7 +48,7 @@ Task Progress:
 - [ ] 路由：app/src/routes/web.rs（页面 GET / 经典 POST；Action 不必注册）
 - [ ] 控制器：薄；req.view / redirect_* / Result<_, AppError>
 - [ ] 写库：services/；错误用 AppError（勿 String）
-- [ ] 校验：validators/ FormRequest（Action 内 from_values）
+- [ ] 校验：validators/ FormRequest（Action 内 from_values）；失败返回稳定码 `username.taken`，文案写 `lang/*.json`
 - [ ] 授权：policies/ + authorize（写路径查库后比对）
 - [ ] 页面：views/pages/*.tsx；import { … } from '../namix' + route + generated
 - [ ] 交互：island + useForm(action) 或 SSR form + CsrfField
@@ -63,6 +64,8 @@ Task Progress:
 | `.spa()` | 仅客户端挂载 |
 | `.ssr_html(html)` | 纯服务端 HTML |
 
+文档壳（`<html>` / `<body>` / 暗亮色）用 `Document`：`.html` / `.body` / `.head` / `.template` / `.template_file`，不依赖 class。见 `docs/05-frontend.md` §6.1。
+
 运行时 **无 Node SSR**（见 `docs/SSR-RUST.md`）。
 
 ### 写操作两出口
@@ -72,8 +75,13 @@ Task Progress:
 
 ### 命名路由
 
-- Rust：`route::main::posts` / `req.see_other_to(route::main::posts)`
-- TS：`route.posts()` / `route.posts.submit()` — **勿硬编码路径**
+- Rust：`AppRoute::Posts` / `req.see_other_to(AppRoute::Posts)`（别名 `route::main::posts` 仍可用）
+- TS：`import { route, AppRoute } from '../namix'` → `route.posts()` / `route(AppRoute.Posts)` — **勿硬编码路径**
+- 页面名：`req.view(Page::Login)`（`app/src/view.rs` 生成），勿手写与 tsx 不一致的字符串
+- 不要把枚举叫 `Route`：那是 `Route::get` 构建器
+- 短响应：`GET "/greeting" => || "Hello World"` 或 `Route::get("/greeting", || "Hello World")`；读库/页面仍用 `async fn`
+- 当前用户：参数 `user: AuthUser`，或 `req.user()`；字段 `req.input("title")`
+- 第三方 API：业务包 `reqwest` 写在 `services/`；`#[server]` 只 return 展示 DTO，Key 不进 `ActionOk`
 
 ### 目录（业务）
 
@@ -83,6 +91,7 @@ app/src/
   policies/     # nx make policy；目录存在即编译
   validators/   models/  services/
   events/  listeners/  seeders/
+  jobs/         # nx make job；nx work 消费
   views/pages|components|lib|namix.ts|generated/
 ```
 
@@ -90,24 +99,31 @@ lean 默认只有 controllers/routes/middleware/views；其余见 `docs/FEATURES
 
 ## 决策树
 
-- **新页面** → 控制器 `req.view` + `views/pages/x.tsx` + `web.rs` 注册 GET  
+- **新页面** → `nx make page X`（控制器 + ViewData + TSX）或手写 `req.view(Page::X)` + `views/pages/x.tsx` + `web.rs` 注册 GET  
+- **自定义 404/403** → 可选：`nx make error`，在 `routes()` 上 `.error_page(404, errors::page)` / `.error_pages(errors::page)`；控制器用 `req.not_found()`。不注册则框架默认 HTML  
 - **可交互表单** → `.island()` + `#[server]` + `useForm`  
 - **无 JS 表单** → `.ssr()` + POST + `CsrfField` + FormRequest 提取器  
 - **改/删资源** → 路径或表单只带 id/内容 → 查库 → `authorize` → Service  
-- **邮件/短信** → `Mail`/`Sms` 门面；示例 `/mailbox`（`docs/09-mail-sms.md`）  
-- **副作用** → `dispatch` / `listen`（`docs/10-events.md`）  
+- **邮件/短信** → `Mail`/`Sms` 门面（开发 log/file，不真发 SMTP）；验证链接 `/email/verify`；示例 `/mailbox`（`docs/09-mail-sms.md`）
+- **后台任务** → `QueuedJob` + `dispatch_job` / `nx work`
+- **角色** → `User.role` + `namix::access` + `require_admin`，仍不要 props 下发角色
+- **副作用** → `dispatch` / `listen`（`docs/10-events.md`）
 - **CRUD 七件套** → `resource("posts", Ctrl)` 或手写 POST（SSR 友好）
 
 ## CLI
 
 ```bash
 nx new my-app
+nx make page Notes
+nx make error
 nx make controller Posts
 nx make policy Post
 nx make resource Posts
 nx make validator PostForm
 nx make job WelcomeMail
+nx work                            # 持久队列 worker
 nx dev -p 3000
+nx clean                           # 删 target / node_modules / public/build
 ```
 
 ## Anti-patterns（再强调）
@@ -119,7 +135,8 @@ nx dev -p 3000
 
 ## Progressive disclosure
 
-- 总索引 → 仓库 [`docs/README.md`](../../../docs/README.md)
+- 总索引 → 仓库 [`docs/README.md`](../../../docs/README.md)（先看 [`docs/START.md`](../../../docs/START.md)）
 - 控制器 / 路由 / 前端 / 授权 → `docs/01`–`07`
 - 平台 / 邮件 / 事件 / JWT·Crypt → `docs/08`–`11`
 - 架构决策 → `docs/DECISIONS.md`
+- 下一刀（Rust ↔ React 写体验，不堆 SMTP/OAuth）→ `docs/NEXT.md` DX 节

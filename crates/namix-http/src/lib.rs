@@ -17,7 +17,8 @@ pub use core::controller::Controller;
 pub use core::controller::{self, FLASH_COOKIE, Flash};
 pub use core::crypt;
 pub use core::csrf::{CsrfConfig, CsrfProtection, CsrfToken};
-pub use core::error::AppError;
+pub use core::error::{AppError, OrNotFound};
+pub use core::error_pages::{ErrorPage, ErrorPages};
 pub use core::extract::{FromRequest, Json, Path};
 pub use core::middleware::{MiddlewareFn, Next, wrap_middleware};
 pub use core::proxy::{TrustedProxies, TrustedProxyError};
@@ -39,7 +40,12 @@ pub use core::test_client::{
 pub use core::transfer::{
     self, ByteRange, ContentRange, ContentRangeHeader, RangeParseError, UploadProgress,
 };
-pub use core::validate::{self, Field, Rule, Validated, ValidationError, Validator};
+pub use core::upload::{MultipartBag, UploadedFile};
+pub use core::validate::{
+    self, Field, PresenceVerifier, Rule, Validated, ValidationError, Validator,
+    clear_error_translator, clear_presence_verifier, install_error_translator,
+    install_presence_verifier, translate_error,
+};
 pub use core::ws::{self, WsError, WsMessage, WsReceiver, WsSender, WsSocket};
 #[cfg(feature = "pages")]
 pub use features::pages::Controller;

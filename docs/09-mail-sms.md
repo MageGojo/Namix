@@ -19,7 +19,14 @@ driver = "log"
 # store = "./storage/sms"
 ```
 
-生产换成真实 SMTP / 短信网关驱动后，门面调用不变。
+生产换成真实 SMTP / 短信网关驱动后，门面调用不变。本仓库 **不接真 SMTP**：`log` / `file` 会把信写到 `storage/mail`，示例 `/mailbox` 能看见。邮箱验证链接同样走这条路径。
+
+自定义驱动（以后再接真网关）：
+
+```rust
+namix::mail::register_transport("smtp", MySmtp)?;
+namix::sms::register_transport("aliyun", MySms)?;
+```
 
 ---
 
@@ -41,7 +48,21 @@ Sms::verify_code("13800000000", "123456")?;
 
 ---
 
-## 3. 示例页面与 Action
+## 3. 邮箱验证（不真发 SMTP）
+
+注册成功后监听器调用 `EmailVerificationService.notify`，信进 `storage/mail`（`/mailbox` 能看见）。链接：
+
+| 项 | 位置 |
+|----|------|
+| 验证 | `GET /email/verify?token=…` → `email_verify::show` |
+| 重发 | 资料页表单 `POST /email/resend`，或 Action `resend_verification` |
+| 门禁 | `require_verified` 已写好；示例主路径**不挂**，避免卡住演示 |
+
+种子用户 `alice@namix.local` 已验证；新注册账号点信里的链接即可。
+
+---
+
+## 4. 示例页面与 Action
 
 | 项 | 位置 |
 |----|------|
@@ -59,13 +80,13 @@ import { sms_send_code } from '../generated/actions/sms_send_code'
 
 ---
 
-## 4. 入站邮件
+## 5. 入站邮件
 
 开发可调 `mail_simulate_inbound` 或对 webhook POST，便于测「收到邮件 → 业务处理」而不接真 SMTP。生产 webhook 须校验签名/共享密钥（按接入方文档配置，勿对公网裸开）。
 
 ---
 
-## 5. 通知骨架
+## 6. 通知骨架
 
 ```bash
 nx make notification OrderShipped

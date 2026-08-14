@@ -49,6 +49,15 @@ from = "Namix"
 store = "./storage/sms"
 log_otp = true
 
+# 持久队列：file / sqlite 重启不丢；nx work 消费
+[queue]
+driver = "file"
+path = "./storage/queue"
+
+[i18n]
+locale = "zh-CN"
+path = "./lang"
+
 [apps.main]
 hosts = ["localhost", "127.0.0.1"]
 port = 3000

@@ -15,6 +15,7 @@ pub struct Profile {
     pub display_name: String,
     pub email: String,
     pub bio: String,
+    pub avatar_path: String,
 
     #[auto]
     pub created_at: jiff::Timestamp,

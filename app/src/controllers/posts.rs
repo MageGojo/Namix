@@ -1,13 +1,12 @@
 //! 我的文章。写路径经 `PostPolicy`：会话身份对照库记录 `user_id`。
 
-use namix::prelude::*;
+use crate::prelude::*;
 use serde::Serialize;
 
 use crate::middleware::extract::AuthUser;
 use crate::models::post::Post;
 use crate::models::user::User;
 use crate::policies::post_policy::PostPolicy;
-use crate::route;
 use crate::services::user::UserService;
 use crate::validators::post_form::PostRequest;
 
@@ -26,11 +25,12 @@ pub struct PostsPage {
     pub username: String,
     pub error: Option<String>,
     pub items: Vec<PostItem>,
+    pub csrf_token: String,
 }
 
 pub async fn index(req: Request, user: AuthUser) -> Response {
     let Some(db_user) = User::find(user.id).await else {
-        return req.redirect_guest_to(route::main::login);
+        return req.redirect_guest_to(AppRoute::Login);
     };
     let posts = db_user.load_posts().await;
     let flash = req.flash();
@@ -44,7 +44,7 @@ pub async fn index(req: Request, user: AuthUser) -> Response {
         })
         .collect();
 
-    req.view("posts")
+    req.view(Page::Posts)
         .ssr()
         .title("我的文章")
         .data(PostsPage {
@@ -52,6 +52,7 @@ pub async fn index(req: Request, user: AuthUser) -> Response {
             username: user.username.clone(),
             error: flash.error,
             items,
+            csrf_token: req.csrf_token().to_string(),
         })
         .render()
 }
@@ -62,33 +63,30 @@ pub async fn create(req: Request, user: AuthUser, form: PostRequest) -> Result<R
         .create_post(user.id, &form.title, &form.body)
         .await
     {
-        Ok(_) => Ok(req.see_other_to(route::main::posts)),
-        Err(error) => Ok(req.redirect_error_to(route::main::posts, error.message())),
+        Ok(_) => Ok(req.see_other_to(AppRoute::Posts)),
+        Err(error) => Ok(req.redirect_error_to(AppRoute::Posts, error.message())),
     }
 }
 
 /// POST /posts/:id — 表单只带 title/body；归属以库中 `Post` 为准。
-pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<Response, AppError> {
-    let id = parse_id(&req)?;
-    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+pub async fn update(
+    req: Request,
+    user: AuthUser,
+    Path(id): Path<u64>,
+    form: PostRequest,
+) -> Result<Response, AppError> {
+    let post = Post::find(id).await.or_not_found()?;
     authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
     UserService::new()
         .update_post(post.id, &form.title, &form.body)
         .await?;
-    Ok(req.see_other_to(route::main::posts))
+    Ok(req.see_other_to(AppRoute::Posts))
 }
 
 /// POST /posts/:id/delete — HTML 表单用 POST；仍走 Policy::Delete。
-pub async fn destroy(req: Request, user: AuthUser) -> Result<Response, AppError> {
-    let id = parse_id(&req)?;
-    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+pub async fn destroy(req: Request, user: AuthUser, Path(id): Path<u64>) -> Result<Response, AppError> {
+    let post = Post::find(id).await.or_not_found()?;
     authorize(&*user, &PostPolicy, Ability::Delete, Some(&post))?;
     UserService::new().delete_post(post.id).await?;
-    Ok(req.see_other_to(route::main::posts))
-}
-
-fn parse_id(req: &Request) -> Result<u64, AppError> {
-    req.param("id")
-        .and_then(|raw| raw.parse().ok())
-        .ok_or(AppError::NotFound)
+    Ok(req.see_other_to(AppRoute::Posts))
 }

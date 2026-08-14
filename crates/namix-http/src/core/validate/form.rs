@@ -4,6 +4,7 @@ use super::{ValidationError, Validator};
 use crate::core::extract::FromRequest;
 use crate::core::request::Request;
 use crate::core::response::Response;
+use crate::core::routing::NamedRoute;
 
 /// 校验失败时的跳转目标。
 #[derive(Debug, Clone, Copy)]
@@ -12,6 +13,13 @@ pub enum FormRedirect {
     Back,
     /// 命名路由（与 `.name("login")` 一致）
     Named(&'static str),
+}
+
+impl FormRedirect {
+    /// `FormRedirect::named(AppRoute::Login)`，与 `.name("login")` 同一字符串。
+    pub fn named(route: impl NamedRoute) -> Self {
+        Self::Named(route.route_name())
+    }
 }
 
 /// Laravel Form Request 风格：进控制器即合法表单。
@@ -46,4 +54,26 @@ impl<T: FormRequest> FromRequest for T {
 /// 给 `FormRequest` 实现用的小入口。
 pub fn validator(req: &Request) -> Validator<'_> {
     Validator::from_request(req)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    struct LoginRoute;
+
+    impl NamedRoute for LoginRoute {
+        fn route_name(self) -> &'static str {
+            "login"
+        }
+    }
+
+    #[test]
+    fn named_accepts_typed_route() {
+        assert!(matches!(
+            FormRedirect::named(LoginRoute),
+            FormRedirect::Named("login")
+        ));
+    }
 }

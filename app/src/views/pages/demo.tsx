@@ -1,5 +1,5 @@
 import type { DemoPage } from '../generated/DemoPage'
-import { route } from '../routes'
+import { route } from '../namix'
 import type { PageProps } from '../types'
 
 type Props = PageProps<DemoPage>

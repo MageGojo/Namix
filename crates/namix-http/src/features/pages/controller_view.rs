@@ -6,7 +6,7 @@ use crate::core::controller::Controller as ControllerCore;
 use crate::core::request::Request;
 use crate::core::response::Response;
 
-use super::{RenderMode, View, ViewPage};
+use super::{Document, DocumentTemplateError, RenderMode, View, ViewPage};
 
 /// 控制器 = 跳转/flash（[`ControllerCore`]）+ 渲染视图。
 ///
@@ -64,6 +64,68 @@ impl<'a> ViewBag<'a> {
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.view = self.view.title(title);
         self
+    }
+
+    pub fn document(mut self, document: Document) -> Self {
+        self.view = self.view.document(document);
+        self
+    }
+
+    pub fn lang(mut self, lang: impl AsRef<str>) -> Self {
+        self.view = self.view.lang(lang);
+        self
+    }
+
+    pub fn html(mut self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.view = self.view.html(name, value);
+        self
+    }
+
+    pub fn html_attr(self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.html(name, value)
+    }
+
+    pub fn html_class(mut self, class: impl AsRef<str>) -> Self {
+        self.view = self.view.html_class(class);
+        self
+    }
+
+    pub fn body(mut self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.view = self.view.body(name, value);
+        self
+    }
+
+    pub fn body_attr(self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.body(name, value)
+    }
+
+    pub fn body_class(mut self, class: impl AsRef<str>) -> Self {
+        self.view = self.view.body_class(class);
+        self
+    }
+
+    pub fn set_body_class(mut self, class: impl AsRef<str>) -> Self {
+        self.view = self.view.set_body_class(class);
+        self
+    }
+
+    /// 追加到文档 `<head>` 的可信 HTML。
+    pub fn head(mut self, html: impl AsRef<str>) -> Self {
+        self.view = self.view.head(html);
+        self
+    }
+
+    pub fn template(mut self, html: impl Into<String>) -> Self {
+        self.view = self.view.template(html);
+        self
+    }
+
+    pub fn template_file(
+        mut self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, DocumentTemplateError> {
+        self.view = self.view.template_file(path)?;
+        Ok(self)
     }
 
     pub fn mode(mut self, mode: RenderMode) -> Self {

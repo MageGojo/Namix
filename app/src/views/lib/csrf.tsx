@@ -1,5 +1,3 @@
-import { useEffect, useState } from 'react'
-
 const CSRF_COOKIE = 'namix_csrf'
 
 /** Read Namix's readable double-submit CSRF cookie. */
@@ -20,11 +18,12 @@ export function csrfToken(cookieSource?: string): string {
 
 export type CsrfFieldProps = { token?: string }
 
-/** Hidden field for classic browser POST forms protected by Namix CSRF. */
+/**
+ * Hidden field for classic browser POST forms.
+ * Pass `token` from `namix::csrf::token(&req)` for no-JS SSR; otherwise the
+ * readable `namix_csrf` cookie is read synchronously on the client.
+ */
 export function CsrfField({ token }: CsrfFieldProps) {
-  const [value, setValue] = useState(token ?? '')
-  useEffect(() => {
-    setValue(token ?? csrfToken())
-  }, [token])
+  const value = token ?? csrfToken()
   return <input type="hidden" name="_csrf" value={value} />
 }

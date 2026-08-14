@@ -13,7 +13,7 @@ services = ["namix-http/services"]
 requests = ["namix-http/requests"]
 pages = ["namix-http/pages"]
 # 数据库驱动（Toasty）— 可多开
-sqlite = ["dep:toasty", "toasty/sqlite", "toasty/jiff"]
+sqlite = ["dep:toasty", "toasty/sqlite", "toasty/jiff", "dep:rusqlite"]
 postgresql = ["dep:toasty", "toasty/postgresql", "toasty/jiff"]
 mysql = ["dep:toasty", "toasty/mysql", "toasty/jiff"]
 turso = ["dep:toasty", "toasty/turso", "toasty/jiff"]
@@ -32,7 +32,8 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
 toasty = { version = "0.9", optional = true, default-features = false, features = ["serde", "jiff"] }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time", "signal"] }
+rusqlite = { version = "0.40", optional = true, features = ["bundled"] }
 aes-gcm = "0.10"
 base64 = "0.22"
 hkdf = "0.12"

@@ -1,20 +1,10 @@
 import brandFallback from '../assets/namix.svg?url'
 import type { LoginPage } from '../generated/LoginPage'
 import { login } from '../generated/actions/login'
-import { Head, Link, useForm } from '../namix'
-import { route } from '../routes'
+import { Head, Link, useForm, route } from '../namix'
 import type { PageProps } from '../types'
 
 type Props = PageProps<LoginPage>
-
-/** 服务端英文原文 → 界面中文（也可在 mapErrors 里自由改写） */
-const LOGIN_MESSAGES: Record<string, string> = {
-  'username is required': '请填写用户名',
-  'username must be at least 3 characters': '用户名至少 3 个字符',
-  'password is required': '请填写密码',
-  'password must be at least 1 characters': '请填写密码',
-  'invalid username or password': '用户名或密码不正确',
-}
 
 export default function Login({
   error: initialError,
@@ -64,11 +54,9 @@ export default function Login({
 
           <form
             onSubmit={form.onSubmit(login, {
-              messages: LOGIN_MESSAGES,
-              // 密码错误时也高亮用户名，演示 mapErrors
               mapErrors: (errors) => {
-                if (errors.password === '用户名或密码不正确' && !errors.username) {
-                  return { ...errors, username: '请检查用户名' }
+                if (errors.password === 'auth.failed' && !errors.username) {
+                  return { ...errors, username: 'auth.check_username' }
                 }
                 return errors
               },
@@ -139,6 +127,10 @@ export default function Login({
               className="font-medium text-teal-700 hover:underline"
             >
               注册
+            </Link>
+            {' · '}
+            <Link href={route.oauth.redirect({ provider: 'dev' })} className="font-medium text-teal-700 hover:underline">
+              Dev 登录
             </Link>
           </p>
         </section>

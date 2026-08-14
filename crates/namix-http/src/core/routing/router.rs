@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use http::Method;
 
 use crate::core::content_type::ContentType;
-use crate::core::controller;
+use crate::core::error::AppError;
+use crate::core::error_pages::{ErrorPage, ErrorPages};
 use crate::core::handler::Handler;
 use crate::core::middleware::{BoxFuture, MiddlewareFn, Next, wrap_middleware};
 use crate::core::request::Request;
@@ -21,7 +22,7 @@ type WsMatch = (Arc<WsRouteEntry>, Vec<(String, String)>);
 
 pub(crate) enum WsHandshakeOutcome {
     Accepted {
-        request: Request,
+        request: Box<Request>,
         handler: WsHandlerFn,
         middleware_response: Response,
     },
@@ -44,6 +45,7 @@ pub(crate) struct RouteEntry {
 pub struct Router {
     routes: Vec<Arc<RouteEntry>>,
     ws_routes: Vec<Arc<WsRouteEntry>>,
+    error_pages: ErrorPages,
 }
 
 impl Router {
@@ -51,6 +53,7 @@ impl Router {
         Self {
             routes: Vec::new(),
             ws_routes: Vec::new(),
+            error_pages: ErrorPages::new(),
         }
     }
 
@@ -58,6 +61,7 @@ impl Router {
         Self {
             routes: entries.into_iter().map(Arc::new).collect(),
             ws_routes: Vec::new(),
+            error_pages: ErrorPages::new(),
         }
     }
 
@@ -65,12 +69,20 @@ impl Router {
         Self {
             routes: Vec::new(),
             ws_routes: entries.into_iter().map(Arc::new).collect(),
+            error_pages: ErrorPages::new(),
         }
     }
 
     pub fn merge(mut self, other: Router) -> Self {
         self.routes.extend(other.routes);
         self.ws_routes.extend(other.ws_routes);
+        self.error_pages = self.error_pages.merge(other.error_pages);
+        self
+    }
+
+    /// 把另一份错误页表垫在下面：当前 router（通常是 `web.rs`）覆盖相同状态码。
+    pub fn merge_error_pages(mut self, pages: ErrorPages) -> Self {
+        self.error_pages = pages.merge(self.error_pages);
         self
     }
 
@@ -122,6 +134,7 @@ impl Router {
                 name: entry.name.clone(),
             }));
         }
+        self.error_pages = self.error_pages.merge(other.error_pages);
         self
     }
 
@@ -165,6 +178,26 @@ impl Router {
         H: Handler<T>,
     {
         self.merge(Route::new(method, path, handler).register())
+    }
+
+    /// 可选：某一个 HTTP 状态的 HTML 错误页。不注册则保持框架默认。
+    ///
+    /// 渲染器返回的状态码会被强制成 `status`，避免写成 200。
+    pub fn error_page<F>(mut self, status: u16, render: F) -> Self
+    where
+        F: Fn(&Request, ErrorPage) -> Response + Send + Sync + 'static,
+    {
+        self.error_pages = std::mem::take(&mut self.error_pages).page(status, render);
+        self
+    }
+
+    /// 可选：其余 HTML 错误共用一页。具体状态（[`error_page`](Self::error_page)）优先。
+    pub fn error_pages<F>(mut self, render: F) -> Self
+    where
+        F: Fn(&Request, ErrorPage) -> Response + Send + Sync + 'static,
+    {
+        self.error_pages = std::mem::take(&mut self.error_pages).any(render);
+        self
     }
 
     /// 按名称查找路由模式（含 `:param`）。
@@ -261,7 +294,7 @@ impl Router {
 
         match request {
             Some(request) => WsHandshakeOutcome::Accepted {
-                request,
+                request: Box::new(request),
                 handler: Arc::clone(&route.handler),
                 middleware_response: response,
             },
@@ -321,6 +354,8 @@ impl Router {
         mut req: Request,
         global_middlewares: Arc<Vec<MiddlewareFn>>,
     ) -> Response {
+        req.set(self.error_pages.clone());
+
         let method = req.method().clone();
         let path = req.path().to_string();
 
@@ -333,8 +368,9 @@ impl Router {
         });
 
         let Some((route, params)) = matched else {
-            let handler: HandlerFn =
-                Arc::new(|_req| Box::pin(async { controller::not_found() }) as BoxFuture<Response>);
+            let handler: HandlerFn = Arc::new(|req| {
+                Box::pin(async move { unmatched_response(req) }) as BoxFuture<Response>
+            });
             return Next::new(global_middlewares, 0, handler).run(req).await;
         };
 
@@ -348,6 +384,10 @@ impl Router {
             .run(req)
             .await
     }
+}
+
+fn unmatched_response(req: Request) -> Response {
+    AppError::NotFound.into_response_for(&req)
 }
 
 fn sanitize_ws_rejection(mut response: Response) -> Response {
@@ -476,17 +516,17 @@ mod tests {
     async fn websocket_global_and_route_middleware_short_circuit_unchanged() {
         let router = Route::ws("/ws", ws_handler).register();
         let outcome = router
-            .dispatch_ws_handshake(
-                ws_req("/ws"),
-                Arc::new(vec![wrap_middleware(global_block)]),
-            )
+            .dispatch_ws_handshake(ws_req("/ws"), Arc::new(vec![wrap_middleware(global_block)]))
             .await;
         let WsHandshakeOutcome::Rejected(response) = outcome else {
             panic!("global middleware unexpectedly allowed upgrade");
         };
         assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
         assert_eq!(response.header("x-blocked-by"), Some("global"));
-        assert_eq!(response.into_status_headers_body().await.2, "global blocked");
+        assert_eq!(
+            response.into_status_headers_body().await.2,
+            "global blocked"
+        );
 
         let router = Route::ws("/ws", ws_handler)
             .middleware(route_block)
@@ -508,9 +548,7 @@ mod tests {
             .middleware(mark_ws_route)
             .register();
         let globals = vec![
-            TrustedProxies::new(["127.0.0.1"])
-                .unwrap()
-                .middleware(),
+            TrustedProxies::new(["127.0.0.1"]).unwrap().middleware(),
             wrap_middleware(request_id),
         ];
 
@@ -529,14 +567,8 @@ mod tests {
         assert_eq!(request.param("room"), Some("general"));
         assert_eq!(request.attr("test.request_id"), Some("req-42"));
         assert_eq!(request.attr("test.route_saw"), Some("req-42"));
-        assert_eq!(
-            request.client_ip(),
-            Some("198.51.100.20".parse().unwrap())
-        );
-        assert_eq!(
-            middleware_response.header("x-request-id"),
-            Some("req-42")
-        );
+        assert_eq!(request.client_ip(), Some("198.51.100.20".parse().unwrap()));
+        assert_eq!(middleware_response.header("x-request-id"), Some("req-42"));
 
         let response = switching_protocols_with_headers(
             "dGhlIHNhbXBsZSBub25jZQ==",

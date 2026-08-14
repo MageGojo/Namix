@@ -1,8 +1,7 @@
 //! 请求提取器：从已水合的上下文取 [`LoginUser`]。
 
-use namix::prelude::*;
+use crate::prelude::*;
 
-use crate::route;
 use crate::services::session::LoginUser;
 
 /// 已登录用户提取器（需路由挂了 `require_login`，或全局 `hydrate` 且确有会话）。
@@ -27,6 +26,6 @@ impl FromRequest for AuthUser {
         req.get::<LoginUser>()
             .cloned()
             .map(AuthUser)
-            .ok_or_else(|| req.redirect_guest_to(route::main::login))
+            .ok_or_else(|| req.redirect_guest_to(AppRoute::Login))
     }
 }

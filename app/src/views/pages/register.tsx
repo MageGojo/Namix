@@ -1,22 +1,9 @@
 import type { RegisterPage } from '../generated/RegisterPage'
 import { register } from '../generated/actions/register'
-import { Head, Link, useForm } from '../namix'
-import { route } from '../routes'
+import { Head, Link, useForm, route } from '../namix'
 import type { PageProps } from '../types'
 
 type Props = PageProps<RegisterPage>
-
-const REGISTER_MESSAGES: Record<string, string> = {
-  'username is required': '请填写用户名',
-  'username must be between 3 and 16 characters': '用户名长度 3–16',
-  'username format is invalid': '仅字母、数字、下划线',
-  'password is required': '请填写密码',
-  'password must be at least 8 characters': '密码至少 8 位',
-  'password confirmation does not match': '两次密码不一致',
-  'password must include upper, lower, digit and special char':
-    '需含大小写、数字和特殊字符',
-  'username already taken': '该用户名已被占用',
-}
 
 function fieldClass(invalid: boolean) {
   return invalid
@@ -27,6 +14,7 @@ function fieldClass(invalid: boolean) {
 export default function Register({ error: initialError }: Props) {
   const form = useForm({
     username: '',
+    email: '',
     password: '',
     password_confirmation: '',
   })
@@ -57,25 +45,11 @@ export default function Register({ error: initialError }: Props) {
 
           <form
             onSubmit={form.onSubmit(register, {
-              messages: REGISTER_MESSAGES,
-              // Regex 规则原文因字段而异：兜底改写
               mapErrors: (errors) => {
-                const next = { ...errors }
-                if (
-                  next.username &&
-                  /must match|regex|format|alphanumeric/i.test(next.username) &&
-                  !REGISTER_MESSAGES[next.username]
-                ) {
-                  next.username = '仅字母、数字、下划线'
+                if (errors.password === 'password.confirmed' && !errors.password_confirmation) {
+                  return { ...errors, password_confirmation: 'password.confirmed' }
                 }
-                if (
-                  next.password &&
-                  /confirmation|confirmed/i.test(next.password) &&
-                  !next.password_confirmation
-                ) {
-                  next.password_confirmation = next.password
-                }
-                return next
+                return errors
               },
             })}
             className="mt-6 space-y-4"
@@ -96,6 +70,24 @@ export default function Register({ error: initialError }: Props) {
               />
               {form.errors.username ? (
                 <p className="text-sm text-red-600">{form.errors.username}</p>
+              ) : null}
+            </label>
+            <label className="block space-y-1.5">
+              <span className="text-sm font-medium text-zinc-700">邮箱</span>
+              <input
+                name="email"
+                type="email"
+                autoComplete="email"
+                value={form.data.email}
+                onChange={(e) => {
+                  form.setData('email', e.target.value)
+                  form.clearErrors('email', '_')
+                }}
+                aria-invalid={!!form.errors.email}
+                className={fieldClass(!!form.errors.email)}
+              />
+              {form.errors.email ? (
+                <p className="text-sm text-red-600">{form.errors.email}</p>
               ) : null}
             </label>
             <label className="block space-y-1.5">
@@ -151,6 +143,10 @@ export default function Register({ error: initialError }: Props) {
               className="font-medium text-teal-700 hover:underline"
             >
               登录
+            </Link>
+            {' · '}
+            <Link href={route.oauth.redirect({ provider: 'dev' })} className="font-medium text-teal-700 hover:underline">
+              Dev 登录
             </Link>
           </p>
         </section>

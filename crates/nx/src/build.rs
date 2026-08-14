@@ -556,10 +556,7 @@ fn frontend_action_seal_marker(project: &Project) -> std::path::PathBuf {
         .join(ACTION_SEAL_BUILD_MARKER)
 }
 
-fn write_frontend_action_seal_marker(
-    project: &Project,
-    public: &[u8; 32],
-) -> Result<(), String> {
+fn write_frontend_action_seal_marker(project: &Project, public: &[u8; 32]) -> Result<(), String> {
     let marker = frontend_action_seal_marker(project);
     fs::write(&marker, format!("{}\n", encode_hex(public))).map_err(|error| {
         format!(

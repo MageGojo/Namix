@@ -1,6 +1,7 @@
 //! Namix CLI — bubbletea-rs TUI + make / migrate / doctor / build / dev
 
 mod build;
+mod clean;
 mod dev;
 mod doctor;
 mod export;
@@ -33,11 +34,14 @@ use crate::ui::{HomeAction, WizardPreset, run_home, run_new_wizard};
 nx new demo --single --tsx --tailwind --git   # lean：controllers+routes+views\n  \
 # 打开 DB/Model：namix.toml [database]/features] + Cargo features，见 docs/FEATURES.md\n  \
 nx make controller Home\n  \
+nx make page Notes                     # 控制器 + ViewData + views/pages/notes.tsx\n  \
+nx make error                          # 可选 404/403 HTML 错误页（不注册则默认）\n  \
 nx make model Article -m                     # 需先 models=true + database.enabled\n  \
 nx make validator Login\n  \
 nx make validator Checkout --app user        # 多应用：端专属\n  \
 nx migrate generate|apply|snapshot|reset     # 需 toasty bin + DB\n  \
 nx seed                                      # 需 seeders=true + seed bin\n  \
+nx work                                      # 持久队列 worker（file/sqlite，重启不丢）\n  \
 nx export routes\n  \
 nx dev                   # 同时启动 Rust + Vite(React)\n  \
 nx build                 # 前后端发布包 → dist/<version>/\n  \
@@ -46,6 +50,8 @@ nx start -p 3000         # 生产启动 dist/current（共享 data/）\n  \
 nx update --build        # 热更新：编新版 → 重叠接流 → 旧进程排水\n  \
 nx stop / nx status\n  \
 nx doctor [--check]\n  \
+nx clean                 # 删 target / node_modules / public/build\n  \
+nx clean -n              # 只看将删什么（cleen/clen 等拼写也能用）\n  \
 nx completion zsh > _nx"
 )]
 struct Cli {
@@ -100,6 +106,8 @@ enum Commands {
     },
     /// 跑种子数据
     Seed,
+    /// 持久队列 worker（`[queue]` file/sqlite；重启不丢活）
+    Work,
     /// 开发：Vite 前端 HMR + Rust cargo-watch 热重载
     Dev {
         /// Rust HTTP 端口
@@ -210,6 +218,16 @@ enum Commands {
         #[arg(long)]
         compile: bool,
     },
+    /// 删除 target、node_modules、Vite 产物等可再生目录
+    #[command(
+        visible_alias = "cleen",
+        aliases = ["clen", "clena", "claen", "cleane", "cln", "cleam"]
+    )]
+    Clean {
+        /// 只列出将删除的路径，不动手
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
     /// 生成 shell 补全脚本
     Completion {
         #[arg(value_enum)]
@@ -244,6 +262,20 @@ enum MakeCmd {
     Controller {
         /// 名称：Home → home.rs
         name: String,
+        #[arg(long = "app", visible_alias = "scope")]
+        app: Option<String>,
+    },
+    /// 生成页面：控制器 + ViewData + `views/pages/*.tsx`
+    Page {
+        /// 名称：Notes → notes.rs + notes.tsx + NotesPage
+        name: String,
+        #[arg(long = "app", visible_alias = "scope")]
+        app: Option<String>,
+    },
+    /// 生成可选 HTML 错误页（404/403/500…）。不注册则框架保持默认
+    Error {
+        /// 可选状态码，仅用于提示：404 / 403 / 500
+        status: Option<String>,
         #[arg(long = "app", visible_alias = "scope")]
         app: Option<String>,
     },
@@ -390,6 +422,7 @@ async fn main() -> ExitCode {
         Some(Commands::Make { cmd }) => finish(run_make(cmd)),
         Some(Commands::Migrate { cmd }) => finish(run_migrate(cmd)),
         Some(Commands::Seed) => finish(run_seed()),
+        Some(Commands::Work) => finish(run_work()),
         Some(Commands::Dev {
             port,
             vite_port,
@@ -459,7 +492,12 @@ async fn main() -> ExitCode {
         })),
         Some(Commands::Doctor { check }) => finish(run_doctor(check)),
         Some(Commands::Check { compile }) => finish(run_doctor(compile)),
+        Some(Commands::Clean { dry_run }) => finish(run_clean(dry_run)),
     }
+}
+
+fn run_clean(dry_run: bool) -> Result<(), String> {
+    clean::run(&project::discover()?, dry_run)
 }
 
 struct UpdateCli {
@@ -583,6 +621,8 @@ fn run_make(cmd: MakeCmd) -> Result<(), String> {
         } => make::model(&project, &name, migration, app.as_deref()),
         MakeCmd::Validator { name, app } => make::validator(&project, &name, app.as_deref()),
         MakeCmd::Controller { name, app } => make::controller(&project, &name, app.as_deref()),
+        MakeCmd::Page { name, app } => make::page(&project, &name, app.as_deref()),
+        MakeCmd::Error { status, app } => make::error(&project, status.as_deref(), app.as_deref()),
         MakeCmd::Resource { name, app } => make::resource(&project, &name, app.as_deref()),
         MakeCmd::Policy { name } => make::policy(&project, &name),
         MakeCmd::Job { name } => make::job(&project, &name),
@@ -605,6 +645,11 @@ fn run_migrate(cmd: MigrateCmd) -> Result<(), String> {
 fn run_seed() -> Result<(), String> {
     let project = project::discover()?;
     migrate::seed(&project)
+}
+
+fn run_work() -> Result<(), String> {
+    let project = project::discover()?;
+    migrate::work(&project)
 }
 
 fn run_dev(
@@ -796,7 +841,9 @@ fn print_new_success(name: &str, path: &Path, cfg: &ScaffoldConfig) {
         println!("  需要 HTTPS 时追加 --https");
     }
     println!("  打开 DB/Model/校验：docs/FEATURES.md · namix.toml [features] + Cargo features");
-    println!("  生成骨架: nx make controller Home · nx make validator Login（先开 validators）");
+    println!(
+        "  生成骨架: nx make page Notes · nx make error · nx make validator Login（先开 validators）"
+    );
     println!("  路由导出: nx export routes → app/src/views/routes.ts");
 }
 
@@ -839,5 +886,23 @@ mod tests {
         opts.single = true;
         opts.https = Some(false);
         assert!(direct_new_config(&opts, true).is_some());
+    }
+
+    #[test]
+    fn clean_typo_aliases_parse() {
+        for alias in [
+            "clean", "cleen", "clen", "clena", "claen", "cleane", "cln", "cleam",
+        ] {
+            let cli = Cli::try_parse_from(["nx", alias]).expect(alias);
+            assert!(
+                matches!(cli.command, Some(Commands::Clean { dry_run: false })),
+                "{alias}"
+            );
+        }
+        let cli = Cli::try_parse_from(["nx", "clean", "-n"]).expect("dry-run");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Clean { dry_run: true })
+        ));
     }
 }

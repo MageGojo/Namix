@@ -1,8 +1,7 @@
 import { AppNav } from '../components/nav'
 import type { MePage } from '../generated/MePage'
 import { ProfileForm } from '../generated/fields'
-import { CsrfField, Head, router, usePage } from '../namix'
-import { route } from '../routes'
+import { CsrfField, Head, router, usePage, route } from '../namix'
 import type { PageProps } from '../types'
 
 type Props = PageProps<MePage>
@@ -10,12 +9,14 @@ type Props = PageProps<MePage>
 export default function Me({
   title,
   username,
-  userId,
   displayName,
   email,
   bio,
+  emailVerified,
+  avatarUrl,
   error,
   saved,
+  csrfToken,
 }: Props) {
   const page = usePage<MePage>()
 
@@ -36,7 +37,7 @@ export default function Me({
           </button>
         </p>
         <p className="mt-2 text-sm text-zinc-500">
-          账号 <b className="text-zinc-800">{username}</b>（id={userId}）· User ↔ Profile 1:1
+          账号 <b className="text-zinc-800">{username}</b> · User ↔ Profile 1:1
         </p>
 
         {error ? (
@@ -45,9 +46,23 @@ export default function Me({
         {saved ? (
           <p className="mt-4 rounded-lg bg-teal-50 px-3 py-2 text-sm text-teal-800">已保存</p>
         ) : null}
+        {emailVerified ? null : (
+          <form method="post" action={route.email.resend()} className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <CsrfField token={csrfToken} />
+            邮箱尚未验证。
+            <button type="submit" className="ml-2 underline">
+              重发验证信
+            </button>
+          </form>
+        )}
 
-        <form method="post" action={route.me.submit()} className="mt-8 space-y-4">
-          <CsrfField />
+        <form
+          method="post"
+          action={route.me.submit()}
+          encType="multipart/form-data"
+          className="mt-8 space-y-4"
+        >
+          <CsrfField token={csrfToken} />
           <label className="block space-y-1.5">
             <span className="text-sm font-medium text-zinc-700">显示名</span>
             <input
@@ -71,6 +86,18 @@ export default function Me({
               rows={4}
               defaultValue={bio}
               className="w-full rounded-lg border border-zinc-300 px-3 py-2 outline-none ring-teal-600/30 focus:border-teal-600 focus:ring-2"
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium text-zinc-700">头像</span>
+            {avatarUrl ? (
+              <img src={avatarUrl} alt="" className="h-16 w-16 rounded-full object-cover" />
+            ) : null}
+            <input
+              name={ProfileForm.Avatar}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              className="block w-full text-sm text-zinc-600"
             />
           </label>
           <button

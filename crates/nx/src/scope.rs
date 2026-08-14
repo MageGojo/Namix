@@ -63,11 +63,12 @@ pub fn resolve_for_make(
                 Scope::App(_) => Ok(scope),
                 Scope::Common => Err("多应用下 `resource` 必须指定端：`--app user`".into()),
             },
-            MakeKind::Controller => match scope {
+            MakeKind::Controller | MakeKind::Page => match scope {
                 Scope::App(_) => Ok(scope),
-                Scope::Common => {
-                    Err("多应用下 `controller` 必须指定端：`--app user`（或 www / admin）".into())
-                }
+                Scope::Common => Err(
+                    "多应用下 `controller` / `page` 必须指定端：`--app user`（或 www / admin）"
+                        .into(),
+                ),
             },
         },
     }
@@ -79,6 +80,7 @@ pub enum MakeKind {
     Validator,
     Controller,
     Resource,
+    Page,
 }
 
 #[allow(dead_code)]
@@ -89,6 +91,7 @@ impl MakeKind {
             MakeKind::Validator => "validator",
             MakeKind::Controller => "controller",
             MakeKind::Resource => "resource",
+            MakeKind::Page => "page",
         }
     }
 }

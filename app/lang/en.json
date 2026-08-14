@@ -1,0 +1,114 @@
+{
+  "auth": {
+    "failed": "Invalid username or password",
+    "unverified": "Please verify your email",
+    "check_username": "Check the username"
+  },
+  "queue": {
+    "hello": "This is a delayed queue email"
+  },
+  "validation": {
+    "failed": "Validation failed",
+    "payload": "The request payload is invalid",
+    "required": ":attribute is required",
+    "email": ":attribute must be a valid email",
+    "min": ":attribute is too short",
+    "max": ":attribute is too long",
+    "between": ":attribute length is invalid",
+    "numeric": ":attribute must be numeric",
+    "integer": ":attribute must be an integer",
+    "digits": ":attribute has the wrong number of digits",
+    "alpha_num": ":attribute must be alphanumeric",
+    "url": ":attribute must be a URL",
+    "local_path": ":attribute must be a local path",
+    "boolean": ":attribute must be boolean",
+    "accepted": ":attribute must be accepted",
+    "declined": ":attribute must be declined",
+    "eq": ":attribute is incorrect",
+    "invalid": ":attribute is invalid",
+    "starts_with": ":attribute prefix is invalid",
+    "ends_with": ":attribute suffix is invalid",
+    "confirmed": ":attribute confirmation does not match",
+    "same": ":attribute must match the other field",
+    "regex": ":attribute format is invalid",
+    "file": ":attribute must be a file",
+    "image": ":attribute must be an image",
+    "mimes": ":attribute file type is not allowed",
+    "max_bytes": ":attribute is too large",
+    "taken": ":attribute has already been taken",
+    "exists": ":attribute does not exist",
+    "presence": ":attribute cannot be checked right now",
+    "complexity": ":attribute must include upper, lower, digit and special char",
+    "otp": "Invalid or expired code"
+  },
+  "attributes": {
+    "username": "username",
+    "email": "email",
+    "password": "password",
+    "title": "title",
+    "body": "body",
+    "to": "recipient",
+    "phone": "phone number",
+    "code": "code",
+    "token": "token",
+    "display_name": "display name",
+    "bio": "bio",
+    "avatar": "avatar",
+    "redirect": "redirect"
+  },
+  "username": {
+    "required": "Please enter a username",
+    "min": "Username must be at least 3 characters",
+    "between": "Username must be 3–16 characters",
+    "regex": "Letters, numbers and underscores only",
+    "taken": "That username is taken",
+    "reserved": "That username is reserved"
+  },
+  "email": {
+    "required": "Please enter an email",
+    "email": "Please enter a valid email",
+    "taken": "That email is taken"
+  },
+  "password": {
+    "required": "Please enter a password",
+    "min": "Password is too short",
+    "confirmed": "Password confirmation does not match",
+    "complexity": "Must include upper, lower, digit and special char"
+  },
+  "title": {
+    "required": "Please enter a title",
+    "between": "Title length is invalid"
+  },
+  "body": {
+    "required": "Please enter the body",
+    "between": "Body length is invalid"
+  },
+  "to": {
+    "required": "Please enter a recipient",
+    "email": "Please enter a valid email"
+  },
+  "phone": {
+    "required": "Please enter a phone number",
+    "invalid": "That phone number is invalid"
+  },
+  "code": {
+    "required": "Please enter the code",
+    "otp": "Invalid or expired code"
+  },
+  "display_name": {
+    "required": "Please enter a display name",
+    "between": "Display name must be 1–32 characters"
+  },
+  "bio": {
+    "max": "Bio is too long"
+  },
+  "avatar": {
+    "image": "Please upload an image",
+    "mimes": "Use png, jpg, webp or gif",
+    "max_bytes": "Avatar must be at most 2MB"
+  },
+  "token": {
+    "required": "Please enter the reset token",
+    "invalid": "Reset token is invalid or expired"
+  }
+}

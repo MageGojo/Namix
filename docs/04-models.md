@@ -159,7 +159,7 @@ let profile = db_user.load_profile().await;
 // services/user.rs：业务错误用 AppError，不要再用 String
 pub async fn register(&self, username: &str, password: &str) -> Result<User, AppError> {
     if User::find_by_username(username).await.is_some() {
-        return Err(AppError::conflict("username already taken"));
+        return Err(AppError::validation("username", "username.taken"));
     }
     let password_hash = Self::hash_password(password)?;
     db::run(move |mut db| async move {
@@ -186,6 +186,8 @@ let user = UserService::new().register(&form.username, &form.password).await?;
 ```
 
 发帖写路径还会先 `authorize`（见 [授权](./07-authorization.md)），再调用 `create_post` / `update_post` / `delete_post`。
+
+调第三方 API 同样放 Service（`reqwest`），不要写在控制器或 TS 里。见 [平台 · 出站 HTTP](./08-platform.md#7-出站-http-调第三方)。
 
 ---
 

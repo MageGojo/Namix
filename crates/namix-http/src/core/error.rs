@@ -9,9 +9,10 @@ use http::StatusCode;
 use thiserror::Error;
 
 use super::content_type::ContentType;
+use super::error_pages::ErrorPages;
 use super::request::Request;
 use super::response::{BoxError, Respond, Response};
-use super::validate::ValidationError;
+use super::validate::{ValidationError, translate_error};
 
 /// 应用层可直接使用的标准错误。
 ///
@@ -54,6 +55,11 @@ impl AppError {
         Self::Validation(HashMap::from([(field.into(), message.into())]))
     }
 
+    /// `Post::find(id).await.or_not_found()?` 的目标错误。
+    pub fn not_found() -> Self {
+        Self::NotFound
+    }
+
     /// Wrap an unexpected error without losing its source chain.
     pub fn internal(error: impl Into<BoxError>) -> Self {
         Self::Internal {
@@ -86,7 +92,7 @@ impl AppError {
             Self::Unauthenticated => "authentication required",
             Self::Forbidden => "forbidden",
             Self::NotFound => "not found",
-            Self::Validation(_) => "validation failed",
+            Self::Validation(_) => "validation.failed",
             Self::RateLimited { .. } => "too many requests",
             Self::Internal { .. } => "internal server error",
         }
@@ -103,36 +109,25 @@ impl AppError {
     pub fn into_response_for(self, req: &Request) -> Response {
         self.log_internal();
         let status = self.status();
-        let message = self.message().to_string();
-        let fields = self.fields();
-        let retry_after = match self {
-            Self::RateLimited { retry_after } => Some(retry_after),
+        let retry_after = match &self {
+            Self::RateLimited { retry_after } => Some(*retry_after),
             _ => None,
         };
-
-        let mut response = if wants_json(req) {
-            Response::new(
-                status,
-                ContentType::Json,
-                serde_json::json!({
-                    "error": message,
-                    "message": message,
-                    "errors": fields,
-                })
-                .to_string(),
-            )
+        let raw_message = self.message().to_string();
+        let fields = self.fields();
+        let json = wants_json(req);
+        let message = if json {
+            raw_message
         } else {
-            let title = status.canonical_reason().unwrap_or("Error");
-            Response::new(
-                status,
-                ContentType::Html,
-                format!(
-                    "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>{}</title><main><h1>{}</h1><p>{}</p></main></html>",
-                    escape_html(title),
-                    escape_html(title),
-                    escape_html(&message),
-                ),
-            )
+            translate_error(&raw_message)
+        };
+
+        let mut response = if json {
+            json_error(status, &message, fields)
+        } else if let Some(custom) = ErrorPages::try_render(req, status.as_u16(), &message) {
+            custom
+        } else {
+            html_error_document(status, &message)
         };
         if let Some(retry_after) = retry_after {
             response.set_header("retry-after", retry_after.to_string());
@@ -151,16 +146,7 @@ impl AppError {
             Self::RateLimited { retry_after } => Some(retry_after),
             _ => None,
         };
-        let mut response = Response::new(
-            status,
-            ContentType::Json,
-            serde_json::json!({
-                "error": message,
-                "message": message,
-                "errors": fields,
-            })
-            .to_string(),
-        );
+        let mut response = json_error(status, &message, fields);
         if let Some(retry_after) = retry_after {
             response.set_header("retry-after", retry_after.to_string());
         }
@@ -171,6 +157,19 @@ impl AppError {
         if let Self::Internal { source } = self {
             tracing::error!(error = ?source, "namix internal application error");
         }
+    }
+}
+
+/// `Option` 扩展：库查询未命中 → [`AppError::NotFound`]。
+///
+/// `use namix::prelude::*;` 后可写 `Post::find(id).await.or_not_found()?`。
+pub trait OrNotFound<T> {
+    fn or_not_found(self) -> Result<T, AppError>;
+}
+
+impl<T> OrNotFound<T> for Option<T> {
+    fn or_not_found(self) -> Result<T, AppError> {
+        self.ok_or(AppError::NotFound)
     }
 }
 
@@ -199,7 +198,7 @@ impl From<ValidationError> for AppError {
             }
         }
         if fields.is_empty() {
-            fields.insert("_".into(), "validation failed".into());
+            fields.insert("_".into(), "validation.failed".into());
         }
         Self::Validation(fields)
     }
@@ -219,6 +218,37 @@ pub(crate) fn wants_json(req: &Request) -> bool {
         || req
             .header("accept")
             .is_some_and(|value| value.contains("application/json"))
+}
+
+pub(crate) fn json_error(
+    status: StatusCode,
+    message: &str,
+    fields: HashMap<String, String>,
+) -> Response {
+    Response::new(
+        status,
+        ContentType::Json,
+        serde_json::json!({
+            "error": message,
+            "message": message,
+            "errors": fields,
+        })
+        .to_string(),
+    )
+}
+
+pub(crate) fn html_error_document(status: StatusCode, message: &str) -> Response {
+    let title = status.canonical_reason().unwrap_or("Error");
+    Response::new(
+        status,
+        ContentType::Html,
+        format!(
+            "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>{}</title><main><h1>{}</h1><p>{}</p></main></html>",
+            escape_html(title),
+            escape_html(title),
+            escape_html(message),
+        ),
+    )
 }
 
 fn escape_html(value: &str) -> String {
@@ -285,5 +315,13 @@ mod tests {
         );
         let response = error.into_action_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn option_or_not_found_maps_none() {
+        let miss: Option<u64> = None;
+        assert!(matches!(miss.or_not_found(), Err(AppError::NotFound)));
+        assert_eq!(Some(7u64).or_not_found().unwrap(), 7);
+        assert!(matches!(AppError::not_found(), AppError::NotFound));
     }
 }

@@ -1,4 +1,20 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *), &:where([data-theme=dark], [data-theme=dark] *));
+
+html {
+  color-scheme: light;
+  background: #fafafa;
+  color: #18181b;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  background: #09090b;
+  color: #fafafa;
+}
+html[data-theme="dark"] body {
+  background: inherit;
+  color: inherit;
+}
 
 /* Inertia / NProgress 顶栏进度条 */
 #nprogress {

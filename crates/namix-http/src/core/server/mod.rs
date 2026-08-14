@@ -565,7 +565,7 @@ async fn handle_hyper(
                     middleware_response.headers(),
                 );
                 tokio::spawn(async move {
-                    crate::core::ws::run_upgraded(req, request, handler).await;
+                    crate::core::ws::run_upgraded(req, *request, handler).await;
                 });
                 return Ok(response);
             }
@@ -577,8 +577,13 @@ async fn handle_hyper(
     let collected = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(err) => {
-            eprintln!("read body failed: {err}");
-            Bytes::new()
+            tracing::warn!(error = %err, "failed to read request body");
+            return Ok(crate::core::response::Response::new(
+                http::StatusCode::BAD_REQUEST,
+                crate::core::content_type::ContentType::Text,
+                "failed to read request body",
+            )
+            .into_inner());
         }
     };
 

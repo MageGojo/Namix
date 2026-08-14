@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatMessage } from '../generated/ChatMessage'
 import type { ChatUser } from '../generated/ChatUser'
-import { route } from '../routes'
+import { route } from '../namix'
 
 export type ChatLine =
   | { kind: 'chat'; message: ChatMessage; self: boolean }

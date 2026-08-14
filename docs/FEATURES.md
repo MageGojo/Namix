@@ -159,6 +159,25 @@ log_otp = true                    # 开发：OTP 打到日志
 
 ---
 
+## 6.1 队列 `[queue]` / i18n `[i18n]`
+
+```toml
+[queue]
+driver = "file"                   # memory | file | sqlite
+path = "./storage/queue"
+
+[i18n]
+locale = "zh-CN"
+path = "./lang"
+```
+
+`QueuedJob` + `dispatch_job` / `dispatch_job_later`；`nx work` 消费（`app --bin work`）。  
+`trans("auth.failed")` / `trans_error("username.taken")` 与前端 `t()` 读同一份 `lang/{locale}.json`。查找顺序：精确键 → `validation.{rule}`（`:attribute` 可再走 `attributes.{field}`）。  
+校验失败给 Action JSON 的是**码**（改 `Min(3)` 文案不会断前端字典）；经典 POST 的 flash / HTML 错误页由 `trans_error` 译成句子。`<html lang>` 跟 `[i18n].locale`。  
+社交登录口子：`SocialProvider` + 示例 `DevProvider`（`/auth/dev`）；真 GitHub/Google 以后再接。
+
+---
+
 ## 7. 安全 `[security]`
 
 ```toml
@@ -221,6 +240,7 @@ nx seed
 | 命令 | lean 下能否用 | 额外条件 |
 |------|---------------|----------|
 | `nx new` | 是 | 生成 lean 项目 |
+| `nx make page` | 是 | 须 `[features].pages = true`；生成控制器 + ViewData + `views/pages/*.tsx` |
 | `nx make controller\|resource\|policy\|job\|mail\|notification\|test` | 是 | 骨架目录，多数不入 `[features]` |
 | `nx make validator` | 是（写文件） | 须 `validators = true`，否则下次 sync 可能删掉带标记目录 |
 | `nx make model` | 是（写文件） | 须 `models = true` + database + Cargo 驱动 |
@@ -228,6 +248,7 @@ nx seed
 | `nx seed` | 否（缺 bin） | `seed` bin + `seeders = true` + DB |
 | `nx export routes` | 是 | 需先跑过后端写出 `storage/routes.*` |
 | `nx doctor` | 是 | lean 不强制 DB/registry；`--check` 跑 `cargo check` |
+| `nx clean` | 是 | 删 `target/`、`node_modules/`、`public/build`；`nx cleen` 等拼写也能用 |
 | `nx dev` / `build` / `start` / `update` / `stop` / `status` | 是 | 生产滚动更新需共享 session（file/redis） |
 | `nx completion` | 是 | 与 feature 无关 |
 

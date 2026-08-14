@@ -26,8 +26,16 @@ pub struct AuthSession {
     pub user_id: u64,
     pub username: String,
     pub is_vip: bool,
+    #[serde(default = "default_session_role")]
+    pub role: String,
+    #[serde(default)]
+    pub email_verified: bool,
     /// Absolute expiry as Unix seconds.
     pub expires_at_unix: u64,
+}
+
+fn default_session_role() -> String {
+    "user".into()
 }
 
 impl AuthSession {
@@ -54,7 +62,34 @@ impl AuthSession {
             user_id,
             username: username.into(),
             is_vip,
+            role: "user".into(),
+            email_verified: false,
             expires_at_unix,
+        }
+    }
+
+    pub fn with_actor(
+        user_id: u64,
+        username: impl Into<String>,
+        is_vip: bool,
+        role: impl Into<String>,
+        email_verified: bool,
+        ttl: Duration,
+    ) -> Self {
+        let mut session = Self::with_ttl(user_id, username, is_vip, ttl);
+        session.role = role.into();
+        if session.role.trim().is_empty() {
+            session.role = "user".into();
+        }
+        session.email_verified = email_verified;
+        session
+    }
+
+    pub fn role(&self) -> &str {
+        if self.role.trim().is_empty() {
+            "user"
+        } else {
+            self.role.as_str()
         }
     }
 }

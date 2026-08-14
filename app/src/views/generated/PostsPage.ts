@@ -5,4 +5,5 @@ export type PostsPage = {
   username: string;
   error: string | null;
   items: PostItem[];
+  csrfToken: string;
 };

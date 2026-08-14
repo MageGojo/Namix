@@ -17,6 +17,8 @@ Namix 在 HTTP 核心里提供可读的实时通道 API。
 3. **WSS**：不另开协议栈；`Server` 开了 HTTPS 后，客户端连 `wss://host/path` 即可。
 4. **路由**：SSE 仍是普通 `Route::get`；WS 用 `Route::ws`（catalog 里 method 记为 `WS`）。
 
+Laravel **Broadcasting**（Echo / Reverb / Pusher、`ShouldBroadcast`）是把领域事件推到**别的浏览器**。Namix 不单独做一套频道授权 + Echo 客户端：进程内副作用用 `dispatch` / `listen`；要推到前端就用本页的 SSE / WebSocket（聊天室已是这条）。需要「某用户的通知频道」时，在已有 WS 上按 `user_id` 过滤即可，不必先引入 Pusher。
+
 ---
 
 ## SSE

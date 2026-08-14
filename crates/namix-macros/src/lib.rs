@@ -6,7 +6,7 @@ use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Data, DeriveInput, Expr, Fields, FnArg, Ident, ItemFn, LitStr, Pat, Path, Token, Type,
+    Data, DeriveInput, Expr, Fields, FnArg, Ident, ItemFn, LitStr, Pat, Token, Type,
     parse_macro_input,
 };
 
@@ -506,6 +506,7 @@ impl Parse for RouteAttr {
 /// ```ignore
 /// routes! {
 ///     "/api" => {
+///         GET "/greeting" => || "Hello World", name: "greeting",
 ///         GET "/me" => user::me, name: "user.me", middleware = [auth],
 ///         WS "/events" => user::events, name: "user.events", middleware = [auth],
 ///         middleware: [logger],
@@ -653,7 +654,7 @@ impl Parse for RouteGroup {
 struct GroupRoute {
     method: Ident,
     path: LitStr,
-    handler: Path,
+    handler: Expr,
     name: Option<Expr>,
     middlewares: Vec<Expr>,
 }
@@ -663,7 +664,7 @@ impl Parse for GroupRoute {
         let method: Ident = input.parse()?;
         let path: LitStr = input.parse()?;
         input.parse::<Token![=>]>()?;
-        let handler: Path = input.parse()?;
+        let handler: Expr = input.parse()?;
 
         let mut name = None;
         let mut middlewares = Vec::new();
@@ -972,63 +973,127 @@ pub fn derive_named_route(input: TokenStream) -> TokenStream {
     )
 }
 
-/// 生成类型化路由名模块，写法接近 `route.user.login`：
+/// 生成类型化路由名模块：枚举 `AppRoute` + 常量别名 `route::main::login`。
 ///
 /// ```ignore
-/// // app/src/route.rs
 /// namix::route_names! {
-///     user {
-///         home,
-///         login,
-///         register_submit = "user.register.submit",
+///     main {
+///         home => "/",
+///         login => "/login",
+///         me_submit = "me.submit" => "/me",
+///         profile = "profile" => "/profile/:id",
 ///     }
 /// }
 ///
-/// req.redirect_guest_to(route::user::login);
-/// Route::get("/login", h).name(route::user::login);
+/// req.redirect_guest_to(AppRoute::Login);
+/// req.redirect_guest_to(route::main::login);
+/// AppRoute::Profile.to(&[("id", "1")]) // → /profile/1
 /// ```
 #[proc_macro]
 pub fn route_names(input: TokenStream) -> TokenStream {
     let file = parse_macro_input!(input as RouteNamesFile);
+    let reexport = if file.apps.iter().any(|app| app.name == "main") {
+        Some(quote! { pub use main::AppRoute; })
+    } else if file.apps.len() == 1 {
+        let name = &file.apps[0].name;
+        Some(quote! { pub use #name::AppRoute; })
+    } else {
+        None
+    };
     let apps = file.apps.iter().map(|app| {
         let app_ident = &app.name;
         let app_str = app.name.to_string();
-        let leaves = app.leaves.iter().map(|leaf| {
-            let const_ident = &leaf.ident;
-            let type_ident =
-                Ident::new(&to_pascal_case(&leaf.ident.to_string()), leaf.ident.span());
-            // leaf 里的 `_` → `.`：register_submit => user.register.submit
-            let route_str = leaf
-                .override_name
-                .as_ref()
-                .map(|s| s.value())
-                .unwrap_or_else(|| {
-                    format!("{app_str}.{}", leaf.ident.to_string().replace('_', "."))
-                });
-            quote! {
+        let variants: Vec<_> = app
+            .leaves
+            .iter()
+            .map(|leaf| {
+                Ident::new(
+                    &enum_variant_ident(&leaf.ident.to_string()),
+                    leaf.ident.span(),
+                )
+            })
+            .collect();
+        let name_arms = app
+            .leaves
+            .iter()
+            .zip(variants.iter())
+            .map(|(leaf, variant)| {
+                let route_str = leaf
+                    .override_name
+                    .as_ref()
+                    .map(|s| s.value())
+                    .unwrap_or_else(|| {
+                        format!("{app_str}.{}", leaf.ident.to_string().replace('_', "."))
+                    });
+                quote! { Self::#variant => #route_str }
+            });
+        let uri_arms = app
+            .leaves
+            .iter()
+            .zip(variants.iter())
+            .map(|(leaf, variant)| match &leaf.uri {
+                Some(uri) => {
+                    let value = uri.value();
+                    quote! { Self::#variant => Some(#value) }
+                }
+                None => quote! { Self::#variant => None },
+            });
+        let consts = app
+            .leaves
+            .iter()
+            .zip(variants.iter())
+            .map(|(leaf, variant)| {
+                let const_ident = &leaf.ident;
+                quote! {
+                    #[allow(non_upper_case_globals)]
+                    pub const #const_ident: AppRoute = AppRoute::#variant;
+                }
+            });
+        quote! {
+            pub mod #app_ident {
                 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-                pub struct #type_ident;
+                pub enum AppRoute {
+                    #(#variants,)*
+                }
 
-                impl ::namix::routing::NamedRoute for #type_ident {
+                impl ::namix::routing::NamedRoute for AppRoute {
                     #[inline]
                     fn route_name(self) -> &'static str {
-                        #route_str
+                        match self {
+                            #(#name_arms,)*
+                        }
                     }
                 }
 
-                #[allow(non_upper_case_globals)]
-                pub const #const_ident: #type_ident = #type_ident;
-            }
-        });
-        quote! {
-            pub mod #app_ident {
-                #(#leaves)*
+                impl AppRoute {
+                    /// 注册时的路径模板，如 `/profile/:id`。扫描不到则为 `None`。
+                    pub fn uri(self) -> Option<&'static str> {
+                        match self {
+                            #(#uri_arms,)*
+                        }
+                    }
+
+                    /// 填路径参数：`AppRoute::Profile.to(&[("id", "1")])` → `/profile/1`。
+                    pub fn to(self, params: &[(&str, &str)]) -> Option<String> {
+                        ::namix::routing::fill_uri(self.uri()?, params)
+                    }
+
+                    /// 无参 URL。路径含 `:id` 时请用 [`Self::to`]。
+                    pub fn href(self) -> String {
+                        self.to(&[])
+                            .or_else(|| self.uri().map(str::to_string))
+                            .unwrap_or_else(|| "/".into())
+                    }
+                }
+
+                #(#consts)*
             }
         }
     });
 
     quote! {
         #(#apps)*
+        #reexport
     }
     .into()
 }
@@ -1069,6 +1134,7 @@ impl Parse for RouteNameApp {
 struct RouteNameLeaf {
     ident: Ident,
     override_name: Option<LitStr>,
+    uri: Option<LitStr>,
 }
 
 impl Parse for RouteNameLeaf {
@@ -1080,11 +1146,69 @@ impl Parse for RouteNameLeaf {
         } else {
             None
         };
+        let uri = if input.peek(Token![=>]) {
+            input.parse::<Token![=>]>()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
         Ok(Self {
             ident,
             override_name,
+            uri,
         })
     }
+}
+
+fn enum_variant_ident(name: &str) -> String {
+    let pascal = to_pascal_case(name);
+    if pascal.is_empty() {
+        "Route".into()
+    } else if is_enum_keyword(&pascal) {
+        format!("R{pascal}")
+    } else {
+        pascal
+    }
+}
+
+fn is_enum_keyword(ident: &str) -> bool {
+    matches!(ident, "Self" | "Crate")
+        || matches!(
+            ident,
+            "as" | "async"
+                | "await"
+                | "break"
+                | "const"
+                | "continue"
+                | "dyn"
+                | "else"
+                | "enum"
+                | "extern"
+                | "false"
+                | "fn"
+                | "for"
+                | "if"
+                | "impl"
+                | "in"
+                | "let"
+                | "loop"
+                | "match"
+                | "mod"
+                | "move"
+                | "mut"
+                | "pub"
+                | "ref"
+                | "return"
+                | "static"
+                | "struct"
+                | "trait"
+                | "true"
+                | "type"
+                | "unsafe"
+                | "use"
+                | "where"
+                | "while"
+        )
 }
 
 fn to_pascal_case(name: &str) -> String {

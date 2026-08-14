@@ -2,10 +2,12 @@
 export type MePage = {
   title: string;
   username: string;
-  userId: number;
   displayName: string;
   email: string;
   bio: string;
+  emailVerified: boolean;
+  avatarUrl: string | null;
   error: string | null;
   saved: boolean;
+  csrfToken: string;
 };

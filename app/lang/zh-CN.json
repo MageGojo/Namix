@@ -1,0 +1,114 @@
+{
+  "auth": {
+    "failed": "用户名或密码不正确",
+    "unverified": "请先验证邮箱",
+    "check_username": "请检查用户名"
+  },
+  "queue": {
+    "hello": "这是一条延迟队列邮件"
+  },
+  "validation": {
+    "failed": "校验未通过",
+    "payload": "请求内容无效",
+    "required": "请填写 :attribute",
+    "email": ":attribute 不是有效邮箱",
+    "min": ":attribute 太短",
+    "max": ":attribute 太长",
+    "between": ":attribute 长度不符合要求",
+    "numeric": ":attribute 必须是数字",
+    "integer": ":attribute 必须是整数",
+    "digits": ":attribute 位数不正确",
+    "alpha_num": ":attribute 只能含字母和数字",
+    "url": ":attribute 必须是网址",
+    "local_path": ":attribute 必须是站内路径",
+    "boolean": ":attribute 必须是布尔值",
+    "accepted": "请同意 :attribute",
+    "declined": "请拒绝 :attribute",
+    "eq": ":attribute 值不正确",
+    "invalid": ":attribute 不合法",
+    "starts_with": ":attribute 前缀不正确",
+    "ends_with": ":attribute 后缀不正确",
+    "confirmed": "两次 :attribute 不一致",
+    "same": ":attribute 必须与另一字段相同",
+    "regex": ":attribute 格式不正确",
+    "file": "请上传 :attribute",
+    "image": ":attribute 必须是图片",
+    "mimes": ":attribute 文件类型不允许",
+    "max_bytes": ":attribute 文件过大",
+    "taken": ":attribute 已被占用",
+    "exists": ":attribute 不存在",
+    "presence": "暂时无法校验 :attribute",
+    "complexity": ":attribute 需含大小写、数字和特殊字符",
+    "otp": "验证码错误或已过期"
+  },
+  "attributes": {
+    "username": "用户名",
+    "email": "邮箱",
+    "password": "密码",
+    "title": "标题",
+    "body": "正文",
+    "to": "收件人",
+    "phone": "手机号",
+    "code": "验证码",
+    "token": "令牌",
+    "display_name": "昵称",
+    "bio": "简介",
+    "avatar": "头像",
+    "redirect": "跳转地址"
+  },
+  "username": {
+    "required": "请填写用户名",
+    "min": "用户名至少 3 个字符",
+    "between": "用户名长度 3–16",
+    "regex": "仅字母、数字、下划线",
+    "taken": "该用户名已被占用",
+    "reserved": "不能使用该用户名"
+  },
+  "email": {
+    "required": "请填写邮箱",
+    "email": "请填写有效邮箱",
+    "taken": "该邮箱已被占用"
+  },
+  "password": {
+    "required": "请填写密码",
+    "min": "密码太短",
+    "confirmed": "两次密码不一致",
+    "complexity": "需含大小写、数字和特殊字符"
+  },
+  "title": {
+    "required": "请填写标题",
+    "between": "标题长度不符合要求"
+  },
+  "body": {
+    "required": "请填写正文",
+    "between": "正文长度不符合要求"
+  },
+  "to": {
+    "required": "请填写收件人",
+    "email": "请填写有效邮箱"
+  },
+  "phone": {
+    "required": "请填写手机号",
+    "invalid": "手机号不正确"
+  },
+  "code": {
+    "required": "请填写验证码",
+    "otp": "验证码错误或已过期"
+  },
+  "display_name": {
+    "required": "请填写昵称",
+    "between": "昵称长度 1–32"
+  },
+  "bio": {
+    "max": "简介太长"
+  },
+  "avatar": {
+    "image": "请上传图片",
+    "mimes": "仅支持 png/jpg/webp/gif",
+    "max_bytes": "头像不能超过 2MB"
+  },
+  "token": {
+    "required": "请填写重置令牌",
+    "invalid": "重置令牌无效或已过期"
+  }
+}

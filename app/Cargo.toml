@@ -17,6 +17,10 @@ path = "src/bin/toasty.rs"
 name = "seed"
 path = "src/bin/seed.rs"
 
+[[bin]]
+name = "work"
+path = "src/bin/work.rs"
+
 [dependencies]
 namix = { workspace = true, features = ["sqlite", "pages"] }
 tokio = { workspace = true }

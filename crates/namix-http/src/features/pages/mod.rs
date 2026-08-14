@@ -9,6 +9,7 @@
 
 mod assets;
 mod controller_view;
+mod document;
 mod props_store;
 mod ssr;
 
@@ -23,6 +24,7 @@ use http::StatusCode;
 
 pub use assets::asset_routes;
 pub use controller_view::{Controller, ViewBag};
+pub use document::{Document, DocumentTemplateError, THEME_COOKIE, THEME_SCRIPT};
 
 pub fn enabled() -> bool {
     true
@@ -106,6 +108,7 @@ pub struct View {
     title: Option<String>,
     mode: RenderMode,
     server_html: Option<String>,
+    document: Document,
 }
 
 impl View {
@@ -116,6 +119,7 @@ impl View {
             title: None,
             mode: RenderMode::Spa,
             server_html: None,
+            document: Document::new(),
         }
     }
 
@@ -157,6 +161,58 @@ impl View {
         self
     }
 
+    pub fn document(mut self, document: Document) -> Self {
+        self.document = self.document.merge(document);
+        self
+    }
+
+    pub fn lang(self, lang: impl AsRef<str>) -> Self {
+        self.document(Document::new().lang(lang))
+    }
+
+    pub fn html(self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.document(Document::new().html(name, value))
+    }
+
+    pub fn html_attr(self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.html(name, value)
+    }
+
+    pub fn html_class(self, class: impl AsRef<str>) -> Self {
+        self.document(Document::new().html_class(class))
+    }
+
+    pub fn body(self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.document(Document::new().body(name, value))
+    }
+
+    pub fn body_attr(self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        self.body(name, value)
+    }
+
+    pub fn body_class(self, class: impl AsRef<str>) -> Self {
+        self.document(Document::new().body_class(class))
+    }
+
+    pub fn set_body_class(self, class: impl AsRef<str>) -> Self {
+        self.document(Document::new().set_body_class(class))
+    }
+
+    pub fn head(self, html: impl AsRef<str>) -> Self {
+        self.document(Document::new().head(html))
+    }
+
+    pub fn template(self, html: impl Into<String>) -> Self {
+        self.document(Document::new().template(html))
+    }
+
+    pub fn template_file(
+        self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, DocumentTemplateError> {
+        Ok(self.document(Document::new().template_file(path)?))
+    }
+
     /// 运行时覆盖渲染模式（优先于 `#[view(..., mode = ...)]`）。
     pub fn mode(mut self, mode: RenderMode) -> Self {
         self.mode = mode;
@@ -188,6 +244,7 @@ impl View {
             .title
             .clone()
             .unwrap_or_else(|| format!("Namix · {}", self.component));
+        let document = Document::resolve(req.get::<Document>(), &self.document);
 
         page_response(match self.mode {
             // SSR / Island 壳与 props 一律由 Rust 产出（见 ssr.rs），运行时不依赖 Node。
@@ -196,14 +253,18 @@ impl View {
                 .map(Ok)
                 .unwrap_or_else(|| ssr::render_html(&self.component, &self.props, &url))
             {
-                Ok(body_html) if !body_html.trim().is_empty() => {
-                    html(document_shell_ssr(&title, &self.component, &body_html))
-                }
+                Ok(body_html) if !body_html.trim().is_empty() => html(document_shell_ssr(
+                    &title,
+                    &self.component,
+                    &body_html,
+                    &document,
+                )),
                 Ok(_) => html(document_shell_island(
                     &title,
                     &self.component,
                     "",
                     &payload.to_string(),
+                    &document,
                 )),
                 Err(error) => {
                     tracing::warn!(
@@ -216,6 +277,7 @@ impl View {
                         &self.component,
                         "",
                         &payload.to_string(),
+                        &document,
                     ))
                 }
             },
@@ -228,11 +290,12 @@ impl View {
                     &self.component,
                     &body_html,
                     &payload.to_string(),
+                    &document,
                 ))
             }
             RenderMode::Spa => {
                 let key = props_store::put(self.component.clone(), self.props, url);
-                html(document_shell_spa(&title, &self.component, &key))
+                html(document_shell_spa(&title, &self.component, &key, &document))
             }
         })
     }
@@ -240,6 +303,7 @@ impl View {
 
 impl IntoResponse for View {
     fn into_response(self) -> Response {
+        let document = Document::resolve(None, &self.document);
         if let Some(body_html) = self.server_html {
             let title = self
                 .title
@@ -248,13 +312,19 @@ impl IntoResponse for View {
                 &title,
                 &self.component,
                 &body_html,
+                &document,
             )));
         }
         let key = props_store::put(self.component.clone(), self.props, "/".into());
         let title = self
             .title
             .unwrap_or_else(|| format!("Namix · {}", self.component));
-        page_response(html(document_shell_spa(&title, &self.component, &key)))
+        page_response(html(document_shell_spa(
+            &title,
+            &self.component,
+            &key,
+            &document,
+        )))
     }
 }
 
@@ -314,47 +384,34 @@ fn page_response(response: Response) -> Response {
         .with_header("vary", "accept, x-namix-props")
 }
 
-fn document_shell_spa(title: &str, component: &str, key: &str) -> String {
-    let title = html_escape(title);
-    let component = html_escape_attr(component);
-    let key = html_escape_attr(key);
-    let tags = assets::script_tags();
-
-    format!(
-        r#"<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{title}</title>
-{tags}
-</head>
-<body class="min-h-screen bg-zinc-50 text-zinc-900 antialiased">
-<div id="app" data-namix-view="{component}" data-namix-mode="spa" data-namix-key="{key}"></div>
-</body>
-</html>"#
+fn document_shell_spa(title: &str, component: &str, key: &str, document: &Document) -> String {
+    let component = document::html_escape_attr(component);
+    let key = document::html_escape_attr(key);
+    render_document(
+        document,
+        title,
+        &assets::script_tags(),
+        &format!(
+            r#"<div id="app" data-namix-view="{component}" data-namix-mode="spa" data-namix-key="{key}"></div>"#
+        ),
     )
 }
 
 /// 纯 SSR：HTML + CSS，无 JSON、无客户端 JS。仅在正文非空时使用。
-fn document_shell_ssr(title: &str, component: &str, body_html: &str) -> String {
-    let title = html_escape(title);
-    let component = html_escape_attr(component);
-    let tags = assets::css_tags();
-
-    format!(
-        r#"<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{title}</title>
-{tags}
-</head>
-<body class="min-h-screen bg-zinc-50 text-zinc-900 antialiased">
-<div id="app" data-namix-view="{component}" data-namix-mode="ssr">{body_html}</div>
-</body>
-</html>"#
+fn document_shell_ssr(
+    title: &str,
+    component: &str,
+    body_html: &str,
+    document: &Document,
+) -> String {
+    let component = document::html_escape_attr(component);
+    render_document(
+        document,
+        title,
+        &assets::css_tags(),
+        &format!(
+            r#"<div id="app" data-namix-view="{component}" data-namix-mode="ssr">{body_html}</div>"#
+        ),
     )
 }
 
@@ -364,38 +421,23 @@ fn document_shell_island(
     component: &str,
     body_html: &str,
     props_json: &str,
+    document: &Document,
 ) -> String {
-    let title = html_escape(title);
-    let component = html_escape_attr(component);
-    let tags = assets::script_tags();
+    let component = document::html_escape_attr(component);
     let props_json = props_json.replace('<', "\\u003c");
-
-    format!(
-        r#"<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{title}</title>
-{tags}
-</head>
-<body class="min-h-screen bg-zinc-50 text-zinc-900 antialiased">
-<div id="app" data-namix-view="{component}" data-namix-mode="island">{body_html}</div>
-<script type="application/json" id="__namix_page">{props_json}</script>
-</body>
-</html>"#
+    render_document(
+        document,
+        title,
+        &assets::script_tags(),
+        &format!(
+            r#"<div id="app" data-namix-view="{component}" data-namix-mode="island">{body_html}</div>
+<script type="application/json" id="__namix_page">{props_json}</script>"#
+        ),
     )
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-fn html_escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;").replace('"', "&quot;")
+fn render_document(document: &Document, title: &str, tags: &str, body_inner: &str) -> String {
+    document.render_shell(title, tags, body_inner)
 }
 
 async fn serve_props(req: Request) -> Response {
@@ -447,6 +489,39 @@ mod tests {
             .render(&req)
     }
 
+    async fn document_overrides(req: Request) -> Response {
+        req.view("home")
+            .lang("en")
+            .html("data-theme", "dark")
+            .html("style", "color-scheme: dark")
+            .body("data-page", "home")
+            .body_class("marketing")
+            .head("<meta name=\"theme-color\" content=\"#09090b\">")
+            .title("Night")
+            .ssr_html("<p>ok</p>")
+            .render()
+    }
+
+    async fn document_owned_template(req: Request) -> Response {
+        req.view("home")
+            .template(
+                "<!doctype html><html{{html_attrs}}><head><title>{{title}}</title>{{extra_head}}</head><body{{body_attrs}}>{{app}}</body></html>",
+            )
+            .html("data-theme", "dark")
+            .body("id", "root")
+            .title("Owned")
+            .ssr_html("<p>ok</p>")
+            .render()
+    }
+
+    async fn themed_from_request(mut req: Request) -> Response {
+        req.set(Document::themed(&req));
+        req.view("home")
+            .title("Theme")
+            .ssr_html("<p>ok</p>")
+            .render()
+    }
+
     #[tokio::test]
     async fn ssr_without_native_body_falls_back_to_inline_client_rendering() {
         let router = Route::get("/", ssr_without_renderer).register();
@@ -486,5 +561,50 @@ mod tests {
         assert!(body.contains("data-namix-mode=\"ssr\""));
         assert!(body.contains("<main><h1>Ready</h1></main>"));
         assert!(!body.contains("__namix_page"));
+    }
+
+    #[tokio::test]
+    async fn document_shell_accepts_html_and_body_attributes() {
+        let router = Route::get("/", document_overrides).register();
+        let mut client = TestClient::new(router);
+        let body = client.get("/").await.text().to_string();
+
+        assert!(
+            body.contains("<html lang=\"en\" data-theme=\"dark\" style=\"color-scheme: dark\">")
+        );
+        assert!(
+            body.contains("class=\"min-h-screen bg-zinc-50 text-zinc-900 antialiased marketing\"")
+        );
+        assert!(body.contains("data-page=\"home\""));
+        assert!(body.contains("<meta name=\"theme-color\" content=\"#09090b\">"));
+        assert!(body.contains("<title>Night</title>"));
+        assert!(!body.contains("class=\"dark\""));
+    }
+
+    #[tokio::test]
+    async fn developer_template_does_not_require_classes() {
+        let router = Route::get("/", document_owned_template).register();
+        let mut client = TestClient::new(router);
+        let body = client.get("/").await.text().to_string();
+
+        assert!(body.contains("<html lang=\"zh-CN\" data-theme=\"dark\">"));
+        assert!(body.contains("id=\"root\""));
+        assert!(body.contains("<title>Owned</title>"));
+        assert!(body.contains("<p>ok</p>"));
+        assert!(!body.contains("class="));
+    }
+
+    #[tokio::test]
+    async fn request_theme_cookie_sets_data_theme_without_class() {
+        let router = Route::get("/", themed_from_request).register();
+        let mut client = TestClient::new(router);
+        client.set_cookie("namix_theme", "dark").unwrap();
+        let body = client.get("/").await.text().to_string();
+
+        assert!(body.contains("data-theme=\"dark\""));
+        assert!(body.contains("color-scheme: dark"));
+        assert!(body.contains("namix_theme"));
+        assert!(body.contains("html[data-theme=dark]"));
+        assert!(!body.contains("class=\"dark\""));
     }
 }

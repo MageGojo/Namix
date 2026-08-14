@@ -21,7 +21,7 @@ impl FromRequest for Request {
     }
 }
 
-/// 路径参数。按路由里 `:param` 的定义顺序提取第一个。
+/// 路径参数。优先取名为 `id` 的段，否则取路由里第一个 `:param`。
 pub struct Path<T>(pub T);
 
 impl<T> FromRequest for Path<T>
@@ -31,14 +31,21 @@ where
 {
     fn from_request(req: &Request) -> Result<Self, Response> {
         let raw = req
-            .params()
-            .first()
-            .map(|(_, v)| v.as_str())
+            .param("id")
+            .or_else(|| req.params().first().map(|(_, value)| value.as_str()))
             .ok_or_else(|| {
-                (StatusCode::BAD_REQUEST, "missing path param".into()).into_response()
+                (
+                    StatusCode::BAD_REQUEST,
+                    "missing path param (expected `:id` or the first `:param`)".into(),
+                )
+                    .into_response()
             })?;
         let value = raw.parse::<T>().map_err(|e| {
-            (StatusCode::BAD_REQUEST, format!("invalid path param: {e}")).into_response()
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid path param `{raw}`: {e}"),
+            )
+                .into_response()
         })?;
         Ok(Path(value))
     }

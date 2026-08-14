@@ -35,7 +35,7 @@ pub struct LoginPage {
 pub async fn login(req: Request) -> Response {
     let registered_count = User::list().await.len() as u64;
 
-    req.view("login")          // 对应 views/pages/login.tsx
+    req.view(Page::Login)      // 对应 views/pages/login.tsx；勿手写与文件名不一致的字符串
         .island()              // 渲染模式：ssr | island | spa
         .title("登录")
         .data(LoginPage {
@@ -57,19 +57,44 @@ pub async fn login(req: Request) -> Response {
 | `.island()` | 登录/注册等要交互 | 可选 SSR HTML + 内联 props；客户端 mount/hydrate，可用 `useForm` / `Link` |
 | `.spa()`（默认） | 只要客户端挂载 | 空壳 + props key，前端再拉 props |
 
-`view("login")` 的名字必须和 `views/pages/login.tsx`、生成注册表一致。
+`view("login")` 的名字必须和 `views/pages/login.tsx`、生成注册表一致。推荐 `req.view(Page::Login)`（`app/src/view.rs` 由 namix-build 生成，写错页面名会编不过）。`view::login` 仍可用。
+
+文档壳（`<html>` / `<body>` / 暗亮色）用 `Document`：`.html` / `.body` / `.head` / `.template` / `.template_file`，不依赖 class。见 [`05-frontend.md`](./05-frontend.md) §6.1。
 
 ### 常用 Request 读取
 
 ```rust
-req.query("page")                 // Option<&str>
+req.query("page")                 // Option<String>
 req.query_or("redirect", "/me")   // 带默认
+req.input("title")                // query + JSON / 表单字段（Laravel `$request->input`）
+req.input_or("title", "")
 req.param("id")                   // 路径参数（字符串）
+req.user()                        // Option<&LoginUser>（需 `use crate::prelude::*`）
+req.ip()                          // 对等 `client_ip()`
 req.header("authorization")
+req.bearer()                      // `Authorization: Bearer …`
 req.cookie("namix_session")
-req.json::<T>()                   // body JSON
+req.csrf_token()                  // SSR 表单 / ViewData；中间件未跑时为空串
+req.json::<T>()                   // 整段 body JSON
 req.flash()                       // 闪存（读一次后通常被 consume；Crypt 自动加密封装）
 ```
+
+当前用户更常见的写法是提取器（对齐 Laravel 的方法注入，未登录直接跳登录页）：
+
+```rust
+pub async fn show(req: Request, user: AuthUser) -> Response { /* … */ }
+```
+
+Sanctum 那种 `return $request->user()` 对应：
+
+```rust
+GET "/user" => |user: AuthUser| json(serde_json::json!({
+    "id": user.id,
+    "username": user.username,
+})), name: "user", middleware = [require_login],
+```
+
+API 带 `Authorization: Bearer`（JWT）即可，不必再抄 `auth:sanctum`；浏览器走 Cookie。不要把 `session_id` / 角色原样 JSON 出去。闭包里也能 `req.user()`。
 
 ### 零授权 props（重要）
 
@@ -88,7 +113,7 @@ let (greeting, nav_links) = auth.choose(
 写操作（更新/删除资源）不要信前端的 `user_id`：从数据库加载模型，再用 `authorize` 比对会话用户与库里的归属。详见 [授权](./07-authorization.md)。
 
 ```rust
-let post = Post::find(form.post_id).await.ok_or(AppError::NotFound)?;
+let post = Post::find(form.post_id).await.or_not_found()?;
 authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
 ```
 
@@ -199,6 +224,29 @@ SessionService::cookie_options_for(Duration::from_secs(60 * 60 * 24 * 30))
 
 **不要**把 `FormRequest` 当作 handler 提取器用在 `#[server]` 上——提取器失败会走 HTML 闪存跳转；Action 里应 `from_values(&req)?`。
 
+### 在 Server Action 里调第三方
+
+出站 HTTP 发生在 **Namix 进程**里（`reqwest` 写在 `services/`，见 [平台 · 出站 HTTP](./08-platform.md#7-出站-http-调第三方)）。浏览器看不到 API Key 和原始请求。
+
+会回到前台的只有 `ActionOk<T>` / `ActionError`（`action_seal` 只加密传输，WASM 解密后页面 JS 仍能看到成功体）。
+
+```rust
+// 漏：把对方整包转给浏览器
+Ok(ActionOk::new(raw_from_vendor))
+
+// 不漏：只下发展示字段；密钥留在 Service
+#[derive(Serialize)]
+struct WeatherOk { pub summary: String }
+
+let raw = WeatherClient::from_env()?.city("shanghai").await?;
+Ok(ActionOk::new(WeatherOk {
+    summary: raw["text"].as_str().unwrap_or("").into(),
+}))
+```
+
+- `#[server]` **默认不挂** `require_login`。要登录才能看的数据，函数里查 `req.user()` / `current(&req)`，没有人就 `AppError::Unauthenticated`。
+- 对方失败用 `AppError::internal(err)`，不要 `ActionError::message(vendor_body)`。
+
 ---
 
 ## 3. 经典 POST + 闪存跳转
@@ -206,8 +254,8 @@ SessionService::cookie_options_for(Duration::from_secs(60 * 60 * 24 * 30))
 适合 SSR 页上的 `<form method="post">`（如个人资料、发帖）。
 
 ```rust
+use crate::prelude::*;
 use crate::middleware::extract::AuthUser;
-use crate::route;
 use crate::validators::profile_form::ProfileRequest;
 
 pub async fn save(req: Request, user: AuthUser, form: ProfileRequest) -> Response {
@@ -215,8 +263,8 @@ pub async fn save(req: Request, user: AuthUser, form: ProfileRequest) -> Respons
         .save_profile(user.id, &form.display_name, &form.email, &form.bio)
         .await
     {
-        Ok(_) => req.redirect_ok_to(route::main::me),
-        Err(error) => req.redirect_error_to(route::main::me, error.message()),
+        Ok(_) => req.redirect_ok_to(AppRoute::Me),
+        Err(error) => req.redirect_error_to(AppRoute::Me, error.message()),
     }
 }
 ```
@@ -270,7 +318,10 @@ text("ok")
 html("<h1>hi</h1>")
 json(&serde_json::json!({ "ok": true }))
 json_raw(r#"{"ok":true}"#)   // 已是 JSON 字符串时用，避免二次编码
-not_found()
+not_found()                  // 纯文本 404，不含自定义页
+req.not_found()              // HTML 优先走自定义错误页，否则与 AppError::NotFound 相同
+req.forbidden()
+req.error_response(namix::http::StatusCode::FORBIDDEN, "VIP only")
 no_content()
 Response::redirect("/login")              // 302
 Response::redirect_see_other("/login")    // 303
@@ -339,14 +390,14 @@ pub async fn password_reset_confirm_action(
 ```rust
 pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<Response, AppError> {
     let id = req.param("id").and_then(|s| s.parse().ok()).ok_or(AppError::NotFound)?;
-    let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+    let post = Post::find(id).await.or_not_found()?;
     authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
     UserService::new().update_post(post.id, &form.title, &form.body).await?;
-    Ok(req.see_other_to(route::main::posts))
+    Ok(req.see_other_to(AppRoute::Posts))
 }
 ```
 
-错误边界见 [错误模型](./ERRORS.md)。
+错误边界见 [错误模型](./ERRORS.md)。自定义 HTML 404/403 见 [路由 · 错误页](./02-routes.md#8-可选-html-错误页)。
 
 ---
 
@@ -370,4 +421,5 @@ pub async fn update(req: Request, user: AuthUser, form: PostRequest) -> Result<R
 | 软导航拿到带引号的 props | 框架侧用 `json_raw`（业务勿对 page props 再 `json(String)`） |
 | SSR 页里调 `useForm` | 改成 `.island()`，或改用经典 form POST |
 | 在控制器里堆 SQL | 抽到 `UserService` 等 |
+| `#[server]` 原样 `return` 第三方 JSON | 映射成展示 DTO；Key 留在 Service |
 | 忘记 `camelCase` | 页面 DTO 加 `#[serde(rename_all = "camelCase")]` |

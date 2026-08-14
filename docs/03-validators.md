@@ -25,7 +25,7 @@
 ```rust
 //! app/src/validators/register_form.rs
 
-use namix::prelude::*;
+use crate::prelude::*;
 
 #[derive(Clone, Copy, Debug, FormField)]
 pub enum RegisterForm {
@@ -45,7 +45,7 @@ pub struct RegisterRequest {
 
 impl FormRequest for RegisterRequest {
     fn redirect_to() -> FormRedirect {
-        FormRedirect::Named("register")  // 经典 POST 失败时跳回注册页
+        FormRedirect::named(AppRoute::Register)  // 经典 POST 失败时跳回注册页
     }
 
     fn from_values(req: &Request) -> Result<Self, ValidationError> {
@@ -101,13 +101,13 @@ pub async fn register_action(req: Request) -> Result<ActionOk<AuthOk>, AppError>
 }
 ```
 
-校验失败 → `ValidationError` → `AppError` / `ActionError` → HTTP 422 风格 JSON，前端 `useForm` 挂到对应 input。
+校验失败 → `ValidationError` → `AppError` / `ActionError` → 字段值为**稳定码**（`username.required`）。前端 `useForm` 用 `t(code)` 读 `lang/*.json`。
 
 业务级错误继续用字段袋（或 `AppError::validation`）：
 
 ```rust
-Err(ActionError::field("username", "username already taken"))
-// 或 Err(AppError::validation("username", "username already taken"))
+Err(ActionError::field("username", "username.taken"))
+// 或 Err(AppError::validation("username", "username.taken"))
 ```
 
 ### B. 经典 POST：提取器注入
@@ -126,7 +126,7 @@ pub async fn create(req: Request, user: AuthUser, form: PostRequest) -> Response
 
 ```rust
 fn redirect_to() -> FormRedirect {
-    FormRedirect::Named("posts")  // 或 FormRedirect::Back
+    FormRedirect::named(AppRoute::Posts)  // 或 FormRedirect::Back / FormRedirect::Named("posts")
 }
 ```
 
@@ -157,7 +157,7 @@ fn redirect_to() -> FormRedirect {
 ```rust
 .custom(MyForm::Title, |value, all| {
     if value.contains("spam") {
-        Err("title not allowed".into())
+        Err("title.spam".into())
     } else {
         Ok(())
     }
@@ -194,7 +194,28 @@ let redirect = v.local_path_or("redirect", "/me").to_string();
 
 ---
 
-## 6. 与前端字段对齐
+## 6. unique / exists / 文件字段
+
+```rust
+Rule::unique("users", "username"),
+Rule::unique("profiles", "email"),
+Rule::unique_ignore_col("profiles", "email", "user_id", current_user_id.to_string()),
+Rule::exists("users", "username"),
+Rule::Image,
+Rule::Mimes(&["png", "jpg", "jpeg", "webp"]),
+Rule::MaxBytes(2_000_000),
+```
+
+- unique / exists 走 `PresenceVerifier`（SQLite 在 Boot 连库后自动安装）。空值跳过。
+- 文件字段走经典 `multipart/form-data` + `<CsrfField />`（`#[server]` / `useForm` 仍是 JSON，不带文件）。
+- `Validated::file_field(ProfileForm::Avatar)` 取出 `UploadedFile`。
+- 失败返回稳定码（`username.taken`、`email.required`），不是英文句子。改 `Min(3)` 只动 `lang/*.json` 里的 `username.min` / `validation.min`，前端不必跟句子。
+- `trans_error` / `t()` 查找：精确键 → `validation.{rule}`（`:attribute` 可用 `attributes.username` 换成「用户名」）。
+- `useForm.messages` 按码覆盖特例。
+
+---
+
+## 7. 与前端字段对齐
 
 Rust：
 
@@ -223,7 +244,7 @@ SSR 表单：
 
 ---
 
-## 7. 新建验证器清单
+## 8. 新建验证器清单
 
 ```bash
 nx make validator Checkout
@@ -244,8 +265,9 @@ nx make validator Checkout
 | 问题 | 正确做法 |
 |------|----------|
 | `#[server]` 里写 `form: RegisterRequest` 参数 | 改用 `from_values(&req)?` |
-| 错误文案直接给用户英文 | 可以；前端用 `messages` 映射中文（见前端文档） |
+| 错误码直接给用户 | 默认 `t("username.taken")` 走 `lang/{locale}.json`；页面可用 `messages: { 'username.taken': '换一个' }` 覆盖 |
 | `Confirmed` 但前端字段名写错 | 必须是 `{name}_confirmation` |
 | 在 `from_values` 里 `return req.redirect…` | 只返回 `Err(ValidationError)` |
 | 密码规则只写在前端 | 后端 `Rule` / `custom` 必须有，前端校验只是体验 |
+| `.custom` 返回英文句子 | 返回码，如 `password.complexity`，并写入 `lang/*.json` |
 | 经典 POST 缺 CSRF | 表单加 `<CsrfField />`；校验本身不负责 CSRF（Boot 中间件） |

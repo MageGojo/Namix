@@ -2,6 +2,9 @@
 
 面向在 `app/` 里写业务的指南：讲清楚**怎么用**和**为什么这样设计**，不展开框架内部实现细节。
 
+**新来的先看 [五分钟上手](./START.md)**（路由名 → `AppRoute` / `Page` / `route.login()`）。  
+下一阶段（Rust ↔ React 写体验，不堆功能）见 [NEXT.md](./NEXT.md) DX 节。
+
 | 文档 | 内容 |
 |------|------|
 | [Features 开关](./FEATURES.md) | `nx new` lean 默认；`[features]` / Cargo / database / session / mail / sms 全表与打开步骤 |
@@ -12,7 +15,7 @@
 | [前端交互](./05-frontend.md) | 渲染模式、`useForm` / `Link` / `CsrfField`、生成产物 |
 | [SSE / WebSocket](./06-realtime.md) | `Sse` 推流、`Route::ws`、WSS、聊天室鉴权 |
 | [授权](./07-authorization.md) | Policy / Gate + 示例 `PostPolicy`（≈ Laravel authorize） |
-| [平台能力](./08-platform.md) | 分页、Cache、Queue、Storage、TestClient、`nx make` |
+| [平台能力](./08-platform.md) | 分页、Cache、Queue、Storage、TestClient、出站 HTTP（`reqwest`）、`nx make` |
 | [邮件 / 短信](./09-mail-sms.md) | `Mail` / `Sms` 门面、`/mailbox`、webhook |
 | [事件 / 监听器](./10-events.md) | `dispatch` / `listen`、注册与登录副作用 |
 | [JWT 与 Crypt](./11-jwt-crypt.md) | Cookie + Bearer、HS256、AES-GCM 密封 |
@@ -65,6 +68,7 @@ app/src/
   events/          # [features].events
   listeners/       # [features].listeners
   seeders/         # [features].seeders
+  jobs/            # nx make job；nx work 消费
   requests/        # [features].requests（可选）
 ```
 
@@ -72,11 +76,17 @@ app/src/
 
 | Laravel | Namix |
 |---------|--------|
-| Controller 方法 | `async fn` + `Request` 上的 Controller 助手 |
-| `return view('login', $data)` | `req.view("login").data(...).island().render()` |
+| `[UserController::class, 'index']` | `users::index` 自由函数；CRUD 用 `resource("users", Ctrl)` |
+| `$request->user()` / `auth:sanctum` | `user: AuthUser` 或 `req.user()`；`hydrate` + `require_login`；API 用 Bearer JWT |
+| `$request->input('title')` | `req.input("title")` / `req.input_or` |
+| `Route::get('/hi', fn () => 'Hello')` | `GET "/greeting" => \|\| "Hello World"` / `Route::get("/greeting", \|\| "Hello World")` |
+| `Http::get('https://…')` | 业务包 `reqwest`，写在 `services/`；无框架门面。见 [08 §7](./08-platform.md#7-出站-http-调第三方) |
+| Broadcasting / Echo | SSE / `Route::ws`；进程内事件是 `dispatch` / `listen` |
+| `return view('login', $data)` | `req.view(Page::Login).data(...).island().render()` |
 | Form Request | `impl FormRequest` + 提取器或 `from_values` |
 | Eloquent Model | `#[derive(toasty::Model)]` + `User::find` / `load_posts` |
-| `route('me')` | Rust `route::main::me` / TS `route.me()` |
+| `route('me')` | Rust `AppRoute::Me` / TS `route.me()` |
+| `errors/404.blade.php` | 可选 `.error_page(404, …)` / `.error_pages(…)` |
 | Inertia `useForm` / `Link` | `import { useForm, Link, CsrfField } from '../namix'` |
 | Livewire / RPC 写操作 | `#[server]` + `generated/actions/*` |
 | Cookie 会话 / Sanctum token | opaque Cookie + 可选 HS256 JWT Bearer（共用 `sid` / Store） |

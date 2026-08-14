@@ -22,14 +22,17 @@ Namix 将错误分为两类，避免控制器以 `String` 约定状态码或泄�
 
 ```rust
 // 控制器：Policy 失败 → 403；查无 → 404
-let post = Post::find(id).await.ok_or(AppError::NotFound)?;
+let post = Post::find(id).await.or_not_found()?;
 authorize(&*user, &PostPolicy, Ability::Update, Some(&post))?;
 
 // Service：冲突 / 校验用具名构造；DB I/O 用 internal
 if User::find_by_username(username).await.is_some() {
-    return Err(AppError::conflict("username already taken"));
+    return Err(AppError::validation("username", "username.taken"));
 }
 db::run(/* … */).await.map_err(AppError::internal)?;
+
+// 出站 HTTP：对方 5xx / 超时同样 internal，不要把响应原文丢给 Action / 页面
+client.get(url).send().await.map_err(AppError::internal)?;
 
 // Storage：策略问题是 4xx，I/O 是带 source 的 500
 let file = storage.put_with_policy("avatars/a.png", bytes, &policy)?;
@@ -58,6 +61,28 @@ fn handle(self: Box<Self>) -> namix::JobFuture {
 ```
 
 库公开 API 继续返回具体错误类型；`anyhow` 不穿透 HTTP 或业务领域边界。
+
+## 可选 HTML 错误页
+
+这是**可选**能力。不注册时，浏览器看到框架通用 HTML；JSON 与 Action 不变。
+
+```rust
+// routes/web.rs
+pub fn routes() -> Router {
+    routes! { /* … */ }
+        .error_page(404, errors::page)
+        .error_pages(errors::page) // 403 / 500 / 429 …
+}
+
+// 控制器：走错误页
+return req.not_found();
+return req.forbidden();
+return req.error_response(StatusCode::FORBIDDEN, "VIP only");
+```
+
+渲染器签名：`fn(&Request, ErrorPage) -> Response`。框架会把 HTTP 状态码强制成对应值。JSON 请求（`Accept: application/json` 或路径 `/api/…`）和 `#[server]` **不会**走 HTML 页。
+
+骨架：`nx make error`。不要在渲染器里再调 `req.not_found()`（会递归）。
 
 ## 与授权 / 会话
 

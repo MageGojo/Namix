@@ -2,6 +2,7 @@
 // 新增 .rs 后 cargo check 自动注册。
 
 pub mod chat;
+pub mod email_verification;
 pub mod password_reset;
 pub mod session;
 pub mod user;

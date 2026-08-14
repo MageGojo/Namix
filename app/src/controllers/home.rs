@@ -3,7 +3,7 @@
 //! 授权只在服务端分支：下发给页面的是**已定稿的展示数据**（问候语、导航链接），
 //! 绝不包含 `userId` / `isVip` / roles / token。
 
-use namix::prelude::*;
+use crate::prelude::*;
 use serde::Serialize;
 
 use crate::middleware::extract::AuthUser;
@@ -47,7 +47,7 @@ pub async fn index(req: Request) -> Response {
         },
     );
 
-    req.view("home")
+    req.view(Page::Home)
         .ssr()
         .title("User App")
         .data(HomePage {
@@ -69,30 +69,37 @@ pub async fn vip_lounge(_req: Request, user: AuthUser) -> Response {
 
 fn guest_nav() -> Vec<NavLink> {
     vec![
-        link("Home", "/"),
-        link("Login", "/login"),
-        link("Register", "/register"),
-        link("Demo", "/demo"),
+        link("Home", AppRoute::Home.href()),
+        link("Login", AppRoute::Login.href()),
+        link("Register", AppRoute::Register.href()),
+        link("Demo", AppRoute::Demo.href()),
     ]
 }
 
 fn user_nav(user: &LoginUser) -> Vec<NavLink> {
     let mut links = vec![
-        link("Home", "/"),
-        link("Me", "/me"),
-        link("Posts", "/posts"),
-        link("Chat", "/chat"),
-        link("Public", "/profile/1"),
-        link("Demo", "/demo"),
+        link("Home", AppRoute::Home.href()),
+        link("Me", AppRoute::Me.href()),
+        link("Posts", AppRoute::Posts.href()),
+        link("Chat", AppRoute::Chat.href()),
+        link(
+            "Public",
+            AppRoute::Profile
+                .to(&[("id", "1")])
+                .unwrap_or_else(|| "/profile/1".into()),
+        ),
+        link("Demo", AppRoute::Demo.href()),
     ];
-    // VIP 链接只在服务端插入；前端看不到 isVip 字段。
     if user.is_vip {
-        links.push(link("VIP", "/vip"));
+        links.push(link("VIP", AppRoute::Vip.href()));
+    }
+    if user.role == "admin" {
+        links.push(link("Admin", AppRoute::AdminUsers.href()));
     }
     links
 }
 
-fn link(label: &str, href: &str) -> NavLink {
+fn link(label: &str, href: impl Into<String>) -> NavLink {
     NavLink {
         label: label.into(),
         href: href.into(),

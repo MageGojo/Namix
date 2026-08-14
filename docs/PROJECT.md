@@ -44,8 +44,8 @@ app（业务示例）
 
 1. `app/build.rs` 调用 `namix-build::sync_single()`。
 2. 构建脚本同步模块声明并扫描路由、验证器、页面与 `#[server]` Action。
-3. 生成 `route::main::*`、`views/generated/fields.ts`、`views/generated/registry.ts` 与 Action TS 客户端。
-4. `Boot` 在启动时导出命名路由 JSON，前端据此生成 `views/routes.ts`。
+3. 生成 `AppRoute` / `route::main::*`、`Page` / `view::*`、`views/generated/fields.ts`、`views/generated/registry.ts` 与 Action TS 客户端。
+4. `Boot` 在启动时导出命名路由 JSON，前端据此生成 `views/routes.ts`（与第 3 步时间线不一致：Rust 编译期有 `AppRoute`，TS 要等启动或 `nx export routes`）。计划改为 cargo 同步写出 `routes.ts`，见 [`NEXT.md`](./NEXT.md)。
 
 生成文件带有 `@generated` 标记；修改源路由、验证器或页面后应重新执行 Rust 构建或检查。
 

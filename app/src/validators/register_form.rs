@@ -1,11 +1,13 @@
 //! 注册表单（Form Request）：进控制器即合法字段。
 
-use namix::prelude::*;
+use crate::prelude::*;
 
 #[derive(Clone, Copy, Debug, FormField)]
 pub enum RegisterForm {
     #[field = "username"]
     Username,
+    #[field = "email"]
+    Email,
     #[field = "password"]
     Password,
     #[field = "password_confirmation"]
@@ -16,12 +18,13 @@ pub enum RegisterForm {
 #[derive(Clone, Debug)]
 pub struct RegisterRequest {
     pub username: String,
+    pub email: String,
     pub password: String,
 }
 
 impl FormRequest for RegisterRequest {
     fn redirect_to() -> FormRedirect {
-        FormRedirect::Named("register")
+        FormRedirect::named(AppRoute::Register)
     }
 
     fn from_values(req: &Request) -> Result<Self, ValidationError> {
@@ -33,6 +36,16 @@ impl FormRequest for RegisterRequest {
                     Rule::Required,
                     Rule::Between(3, 16),
                     Rule::Regex(r"^[a-zA-Z0-9_]+$"),
+                    Rule::unique("users", "username"),
+                ],
+            )
+            .rules(
+                RegisterForm::Email,
+                &[
+                    Rule::Required,
+                    Rule::Email,
+                    Rule::Max(64),
+                    Rule::unique("profiles", "email"),
                 ],
             )
             .rules(
@@ -47,13 +60,14 @@ impl FormRequest for RegisterRequest {
                 if has_upper && has_lower && has_digit && has_special {
                     Ok(())
                 } else {
-                    Err("password must include upper, lower, digit and special char".into())
+                    Err("password.complexity".into())
                 }
             })
             .validate()?;
 
         Ok(Self {
             username: v.get(RegisterForm::Username).to_string(),
+            email: v.get(RegisterForm::Email).to_string(),
             password: v.get(RegisterForm::Password).to_string(),
         })
     }

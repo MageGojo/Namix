@@ -42,6 +42,9 @@ pub struct User {
     /// VIP 角色（门禁用）。
     pub is_vip: bool,
 
+    /// 约定角色：`user` / `admin`（配合 `namix::access`）。
+    pub role: String,
+
     /// 邮箱验证时间（≈ `email_verified_at`）；未验证为 `None`。
     pub email_verified_at: Option<jiff::Timestamp>,
 

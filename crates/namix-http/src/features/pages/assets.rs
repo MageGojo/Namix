@@ -120,10 +120,7 @@ fn normalize_url_base(raw: &str) -> String {
 fn vite_dev() -> bool {
     match std::env::var("NAMIX_VITE_DEV") {
         Ok(v) => matches!(v.as_str(), "1" | "true" | "yes" | "on"),
-        Err(_) => {
-            !Path::new("public/build/.vite/manifest.json").is_file()
-                && !Path::new("public/build/manifest.json").is_file()
-        }
+        Err(_) => !manifest_candidates().iter().any(|p| p.is_file()),
     }
 }
 
@@ -131,11 +128,36 @@ fn vite_origin() -> String {
     std::env::var("NAMIX_VITE_ORIGIN").unwrap_or_else(|_| "http://127.0.0.1:5173".into())
 }
 
+/// 生产进程以 `NAMIX_HOME` 为发布根；未设置时回退到 CWD 相对路径（`nx dev` / 单测）。
+fn namix_home() -> Option<PathBuf> {
+    std::env::var_os("NAMIX_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+fn release_build_dir() -> PathBuf {
+    namix_home()
+        .map(|home| home.join("public/build"))
+        .unwrap_or_else(|| PathBuf::from("public/build"))
+}
+
+fn shared_build_dir() -> PathBuf {
+    namix_home()
+        .map(|home| {
+            home.parent()
+                .map(|parent| parent.join("data/public/build"))
+                .unwrap_or_else(|| home.join("../data/public/build"))
+        })
+        .unwrap_or_else(|| PathBuf::from("../data/public/build"))
+}
+
+fn manifest_candidates() -> [PathBuf; 2] {
+    let root = release_build_dir();
+    [root.join(".vite/manifest.json"), root.join("manifest.json")]
+}
+
 fn read_manifest_entry() -> Option<(Vec<String>, String)> {
-    let candidates = [
-        PathBuf::from("public/build/.vite/manifest.json"),
-        PathBuf::from("public/build/manifest.json"),
-    ];
+    let candidates = manifest_candidates();
     let raw = candidates.iter().find_map(|p| fs::read_to_string(p).ok())?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
 
@@ -191,11 +213,9 @@ pub fn asset_routes() -> Router {
 
 async fn serve_build(req: Request) -> Response {
     let path = req.param("path").unwrap_or("").to_string();
-    let Some(file) = resolve_build_asset(
-        Path::new("public/build"),
-        Path::new("../data/public/build"),
-        &path,
-    ) else {
+    let release = release_build_dir();
+    let shared = shared_build_dir();
+    let Some(file) = resolve_build_asset(&release, &shared, &path) else {
         return with_status(StatusCode::NOT_FOUND, "not found");
     };
     match fs::read(&file) {
@@ -240,11 +260,18 @@ fn safe_asset_path(raw: &str) -> Option<PathBuf> {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use http::StatusCode;
+
     use super::{
-        normalize_mount_prefix, normalize_url_base, resolve_build_asset, strip_build_prefix,
+        asset_routes, normalize_mount_prefix, normalize_url_base, resolve_build_asset, script_tags,
+        strip_build_prefix,
     };
+    use crate::core::test_client::TestClient;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_root() -> PathBuf {
         let nonce = SystemTime::now()
@@ -299,10 +326,171 @@ mod tests {
         assert_eq!(strip_build_prefix("assets/a.js"), "assets/a.js");
         assert_eq!(strip_build_prefix("/build/assets/a.js"), "assets/a.js");
         assert_eq!(strip_build_prefix("build/assets/a.js"), "assets/a.js");
-        assert_eq!(
-            strip_build_prefix("/lr/build/assets/a.js"),
-            "assets/a.js"
-        );
+        assert_eq!(strip_build_prefix("/lr/build/assets/a.js"), "assets/a.js");
         assert_eq!(strip_build_prefix("lr/build/assets/a.js"), "assets/a.js");
+    }
+
+    struct AssetEnv {
+        vite: Result<String, std::env::VarError>,
+        prefix: Result<String, std::env::VarError>,
+        base: Result<String, std::env::VarError>,
+        home: Result<String, std::env::VarError>,
+        root: PathBuf,
+    }
+
+    impl Drop for AssetEnv {
+        fn drop(&mut self) {
+            restore_env("NAMIX_VITE_DEV", &self.vite);
+            restore_env("NAMIX_ASSET_PREFIX", &self.prefix);
+            restore_env("NAMIX_ASSET_BASE", &self.base);
+            restore_env("NAMIX_HOME", &self.home);
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn restore_env(key: &str, previous: &Result<String, std::env::VarError>) {
+        match previous {
+            Ok(value) => unsafe {
+                // Tests serialize env mutations through ENV_LOCK.
+                std::env::set_var(key, value);
+            },
+            Err(_) => unsafe {
+                std::env::remove_var(key);
+            },
+        }
+    }
+
+    fn install_release_layout() -> AssetEnv {
+        let vite = std::env::var("NAMIX_VITE_DEV");
+        let prefix = std::env::var("NAMIX_ASSET_PREFIX");
+        let base = std::env::var("NAMIX_ASSET_BASE");
+        let home_env = std::env::var("NAMIX_HOME");
+        let root = temp_root();
+        let home = root.join("0.0.0-smoke");
+        fs::create_dir_all(home.join("public/build/.vite")).unwrap();
+        fs::create_dir_all(home.join("public/build/assets")).unwrap();
+        fs::create_dir_all(root.join("data/public/build/assets")).unwrap();
+        fs::write(
+            home.join("public/build/.vite/manifest.json"),
+            r#"{
+              "src/views/_entry.tsx": {
+                "file": "assets/entry.js",
+                "isEntry": true,
+                "css": ["assets/entry.css"]
+              }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            home.join("public/build/assets/entry.js"),
+            b"window.__namix=1",
+        )
+        .unwrap();
+        fs::write(
+            home.join("public/build/assets/entry.css"),
+            b"body{color:red}",
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/public/build/assets/legacy.js"),
+            b"window.__legacy=1",
+        )
+        .unwrap();
+        unsafe {
+            // Tests serialize env mutations through ENV_LOCK.
+            std::env::set_var("NAMIX_VITE_DEV", "0");
+            std::env::set_var("NAMIX_HOME", &home);
+            std::env::remove_var("NAMIX_ASSET_PREFIX");
+            std::env::remove_var("NAMIX_ASSET_BASE");
+        }
+        AssetEnv {
+            vite,
+            prefix,
+            base,
+            home: home_env,
+            root,
+        }
+    }
+
+    #[test]
+    fn script_tags_are_served_from_build_routes() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = install_release_layout();
+
+        let tags = script_tags();
+        assert!(tags.contains("href=\"/build/assets/entry.css\""));
+        assert!(tags.contains("src=\"/build/assets/entry.js\""));
+        assert!(!tags.contains("namix view: cd app && npm run build"));
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut client = TestClient::new(asset_routes());
+                let css = client.get("/build/assets/entry.css").await;
+                let js = client.get("/build/assets/entry.js").await;
+                let missing = client.get("/build/assets/missing.js").await;
+                let traversal = client.get("/build/../secret").await;
+                let shared = client.get("/build/assets/legacy.js").await;
+
+                assert_eq!(css.status, StatusCode::OK);
+                assert_eq!(js.status, StatusCode::OK);
+                assert_eq!(js.text(), "window.__namix=1");
+                assert_eq!(missing.status, StatusCode::NOT_FOUND);
+                assert_eq!(traversal.status, StatusCode::NOT_FOUND);
+                assert_eq!(shared.status, StatusCode::OK);
+                assert_eq!(shared.text(), "window.__legacy=1");
+            });
+    }
+
+    #[test]
+    fn prefixed_script_tags_and_alias_route_serve_the_same_files() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = install_release_layout();
+        unsafe {
+            // Tests serialize env mutations through ENV_LOCK.
+            std::env::set_var("NAMIX_ASSET_PREFIX", "/lr");
+        }
+
+        let tags = script_tags();
+        assert!(tags.contains("href=\"/lr/build/assets/entry.css\""));
+        assert!(tags.contains("src=\"/lr/build/assets/entry.js\""));
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut client = TestClient::new(asset_routes());
+                let prefixed = client.get("/lr/build/assets/entry.js").await;
+                let root = client.get("/build/assets/entry.js").await;
+                assert_eq!(prefixed.status, StatusCode::OK);
+                assert_eq!(root.status, StatusCode::OK);
+                assert_eq!(prefixed.text(), root.text());
+            });
+    }
+
+    #[test]
+    fn script_tags_read_cwd_relative_manifest_without_namix_home() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = install_release_layout();
+        let home = std::env::var("NAMIX_HOME").expect("NAMIX_HOME");
+        let cwd = std::env::current_dir().unwrap();
+        struct CwdGuard(PathBuf);
+        impl Drop for CwdGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let _guard = CwdGuard(cwd);
+        unsafe {
+            // Tests serialize env mutations through ENV_LOCK.
+            std::env::remove_var("NAMIX_HOME");
+        }
+        std::env::set_current_dir(&home).unwrap();
+        let tags = script_tags();
+        assert!(tags.contains("src=\"/build/assets/entry.js\""));
+        assert!(tags.contains("href=\"/build/assets/entry.css\""));
     }
 }

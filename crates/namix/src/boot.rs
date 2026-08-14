@@ -19,7 +19,10 @@ use clap::{ArgAction, Parser};
 use crate::CsrfConfig;
 use crate::config::NamixToml;
 use crate::controller::text;
-use crate::{MiddlewareFn, Next, Request, Response, Route, Router, Server, wrap_middleware};
+use crate::{
+    ErrorPage, ErrorPages, MiddlewareFn, Next, Request, Response, Route, Router, Server,
+    wrap_middleware,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "namix", about = "Namix app server", disable_help_flag = true)]
@@ -49,6 +52,9 @@ pub struct Boot {
     toml: Option<&'static str>,
     router: Router,
     middlewares: Vec<MiddlewareFn>,
+    error_pages: ErrorPages,
+    #[cfg(feature = "pages")]
+    document: Option<crate::pages::Document>,
     #[cfg(any(
         feature = "sqlite",
         feature = "postgresql",
@@ -66,6 +72,9 @@ impl Boot {
             toml: None,
             router: Router::new(),
             middlewares: Vec::new(),
+            error_pages: ErrorPages::new(),
+            #[cfg(feature = "pages")]
+            document: None,
             #[cfg(any(
                 feature = "sqlite",
                 feature = "postgresql",
@@ -87,12 +96,38 @@ impl Boot {
         self
     }
 
+    /// 可选：某一个状态的 HTML 错误页。更常见的是写在 `routes()` 上，好让 `TestClient` 也能看到。
+    pub fn error_page<F>(mut self, status: u16, render: F) -> Self
+    where
+        F: Fn(&Request, ErrorPage) -> Response + Send + Sync + 'static,
+    {
+        self.error_pages = std::mem::take(&mut self.error_pages).page(status, render);
+        self
+    }
+
+    /// 可选：其余 HTML 错误共用一页。
+    pub fn error_pages<F>(mut self, render: F) -> Self
+    where
+        F: Fn(&Request, ErrorPage) -> Response + Send + Sync + 'static,
+    {
+        self.error_pages = std::mem::take(&mut self.error_pages).any(render);
+        self
+    }
+
     pub fn middleware<F, Fut>(mut self, f: F) -> Self
     where
         F: Fn(Request, Next) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Response> + Send + 'static,
     {
         self.middlewares.push(wrap_middleware(f));
+        self
+    }
+
+    /// 全站文档壳默认（任意 html/body 属性、额外 `<head>`、或整份 `.template`）。
+    /// 按请求变化的值（如暗色 cookie）在中间件里 `req.set(Document::themed(&req))` 合并。
+    #[cfg(feature = "pages")]
+    pub fn document(mut self, document: crate::pages::Document) -> Self {
+        self.document = Some(document);
         self
     }
 
@@ -109,7 +144,7 @@ impl Boot {
         self
     }
 
-    pub async fn run(self) -> std::io::Result<()> {
+    pub async fn run(mut self) -> std::io::Result<()> {
         crate::log::init();
         let args = ServeArgs::parse();
         if args.export_routes {
@@ -181,6 +216,21 @@ impl Boot {
             )
         })?;
         crate::sms::init(&cfg.sms);
+        crate::queue_durable::init(&cfg.queue).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("queue initialization failed: {error}"),
+            )
+        })?;
+        crate::i18n::init(&cfg.i18n);
+        #[cfg(feature = "pages")]
+        {
+            let locale = crate::i18n::locale();
+            self.document = Some(match self.document.take() {
+                Some(document) => document.lang(&locale),
+                None => crate::pages::Document::new().lang(&locale),
+            });
+        }
 
         #[cfg(any(
             feature = "sqlite",
@@ -216,6 +266,14 @@ impl Boot {
                     }
                 }
                 crate::db::install(db);
+                #[cfg(feature = "sqlite")]
+                if let Some(path) =
+                    crate::presence::sqlite_path_from_url(&cfg.database.resolved_url())
+                {
+                    namix_http::validate::install_presence_verifier(std::sync::Arc::new(
+                        crate::presence::SqlitePresence::open(path),
+                    ));
+                }
             }
         }
 
@@ -275,6 +333,23 @@ impl Boot {
             };
             server = attach_middleware(server, crate::CsrfProtection::new(csrf).middleware());
         }
+        #[cfg(feature = "pages")]
+        if let Some(document) = self.document {
+            server = attach_middleware(
+                server,
+                wrap_middleware(move |mut req, next| {
+                    let document = document.clone();
+                    async move {
+                        let base = req
+                            .get::<crate::pages::Document>()
+                            .cloned()
+                            .unwrap_or_default();
+                        req.set(base.merge(document));
+                        next.run(req).await
+                    }
+                }),
+            );
+        }
         // Application hydration/auth middleware runs after request identity,
         // trusted-proxy resolution and browser mutation protection, but before
         // user-scoped rate limiting.
@@ -308,7 +383,7 @@ impl Boot {
             "action_seal = {} (NAMIX_ACTION_SEAL overrides toml)",
             crate::server_fn::action_seal_enabled()
         );
-        let router = framework_routes(self.router);
+        let router = framework_routes(self.router.merge_error_pages(self.error_pages));
 
         let catalog = router.catalog();
         write_routes_exports(&catalog);
@@ -317,6 +392,106 @@ impl Boot {
         print_access_urls(&server, args.lan || app_cfg.lan);
         let _pidfile = install_pidfile();
         server.run().await
+    }
+
+    /// Drain the durable queue. Run as `nx work` / `cargo run -p app --bin work`.
+    pub async fn work(self) -> std::io::Result<()> {
+        crate::log::init();
+        let embedded = self.toml.unwrap_or_else(|| {
+            panic!("Boot 需要 .toml(include_str!(\"../namix.toml\"))");
+        });
+        let runtime_config = std::env::var("NAMIX_CONFIG").ok();
+        let file_toml = match runtime_config.as_deref() {
+            Some(path) => Some(std::fs::read_to_string(path).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("read NAMIX_CONFIG {path}: {error}"),
+                )
+            })?),
+            None => std::fs::read_to_string("namix.toml").ok(),
+        };
+        let cfg = if let Some(ref raw) = file_toml {
+            NamixToml::try_parse(raw)
+        } else {
+            NamixToml::try_parse(embedded)
+        }
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        cfg.validate(&self.app)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        crate::config::install_session_secret(
+            cfg.security.session_secret.clone(),
+            cfg.is_production(),
+        );
+        crate::config::install_session_lifetimes(&cfg.session);
+        if let Some(secret) = crate::config::session_secret() {
+            crate::crypt::Crypt::install(secret);
+        } else if let Ok(dev) = std::env::var("NAMIX_SESSION_SECRET") {
+            crate::crypt::Crypt::install(&dev);
+        } else {
+            let ephemeral = format!("dev-crypt-{}", std::process::id());
+            crate::crypt::Crypt::install(&ephemeral);
+        }
+        crate::mail::try_init(&cfg.mail).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("mail initialization failed: {error}"),
+            )
+        })?;
+        crate::sms::init(&cfg.sms);
+        crate::queue_durable::init(&cfg.queue).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("queue initialization failed: {error}"),
+            )
+        })?;
+        crate::i18n::init(&cfg.i18n);
+
+        #[cfg(any(
+            feature = "sqlite",
+            feature = "postgresql",
+            feature = "mysql",
+            feature = "turso",
+            feature = "dynamodb"
+        ))]
+        {
+            if cfg.database.enabled
+                && let Some(models) = self.models
+            {
+                let url = cfg.database.resolved_url();
+                crate::log::info!("database → driver={}", cfg.database.driver);
+                let db = crate::db::connect(&url, models).await.map_err(|error| {
+                    std::io::Error::other(format!("database connect failed: {error}"))
+                })?;
+                if cfg.database.push_schema {
+                    match db.push_schema().await {
+                        Ok(()) => crate::log::info!("database schema pushed"),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            if !msg.contains("already exists") {
+                                return Err(std::io::Error::other(format!(
+                                    "push_schema failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                }
+                crate::db::install(db);
+                #[cfg(feature = "sqlite")]
+                if let Some(path) =
+                    crate::presence::sqlite_path_from_url(&cfg.database.resolved_url())
+                {
+                    namix_http::validate::install_presence_verifier(std::sync::Arc::new(
+                        crate::presence::SqlitePresence::open(path),
+                    ));
+                }
+            }
+        }
+
+        let queue = crate::queue_durable::require()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        crate::log::info!("queue worker → driver={}", queue.driver());
+        queue.work_forever().await;
+        Ok(())
     }
 }
 

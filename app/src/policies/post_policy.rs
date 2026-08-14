@@ -28,6 +28,8 @@ mod tests {
             id,
             username: "alice".into(),
             is_vip: false,
+            role: "user".into(),
+            email_verified: true,
             session_id: "sid".into(),
         }
     }

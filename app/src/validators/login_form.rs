@@ -1,6 +1,6 @@
 //! 登录表单（Form Request）。
 
-use namix::prelude::*;
+use crate::prelude::*;
 
 #[derive(Clone, Copy, Debug, FormField)]
 pub enum LoginForm {
@@ -21,7 +21,7 @@ pub struct LoginRequest {
 
 impl FormRequest for LoginRequest {
     fn redirect_to() -> FormRedirect {
-        FormRedirect::Named("login")
+        FormRedirect::named(AppRoute::Login)
     }
 
     fn from_values(req: &Request) -> Result<Self, ValidationError> {

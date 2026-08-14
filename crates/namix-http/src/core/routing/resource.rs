@@ -68,7 +68,8 @@ where
     let store = controller.clone();
     let show = controller.clone();
     let edit_controller = controller.clone();
-    let update = controller.clone();
+    let update_patch = controller.clone();
+    let update_put = controller.clone();
     let destroy = controller;
 
     Router::new()
@@ -114,7 +115,15 @@ where
         )
         .merge(
             Route::patch(&member, move |req: Request| {
-                let controller = update.clone();
+                let controller = update_patch.clone();
+                async move { respond_resource(controller, req, ResourceController::update).await }
+            })
+            .name(format!("{resource}.update"))
+            .register(),
+        )
+        .merge(
+            Route::put(&member, move |req: Request| {
+                let controller = update_put.clone();
                 async move { respond_resource(controller, req, ResourceController::update).await }
             })
             .name(format!("{resource}.update"))
@@ -189,6 +198,9 @@ mod tests {
         ] {
             assert!(catalog.path(name).is_some(), "missing {name}");
         }
+        let update = catalog.export().get("posts.update").cloned().unwrap();
+        assert!(update.methods.iter().any(|method| method == "PATCH"));
+        assert!(update.methods.iter().any(|method| method == "PUT"));
     }
 
     #[derive(Clone)]

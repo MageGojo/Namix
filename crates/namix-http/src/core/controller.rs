@@ -107,6 +107,18 @@ pub trait Controller {
 
     /// 查询已上传偏移（断点续传：客户端读 `Upload-Offset` / JSON `offset` 后续传）。
     fn upload_offset(&self, path: impl AsRef<Path>) -> Response;
+
+    /// HTML 404：已注册错误页则渲染，否则与 `Err(AppError::NotFound)` 相同。
+    fn not_found(&self) -> Response;
+
+    /// HTML 403：已注册错误页则渲染，否则与 `Err(AppError::Forbidden)` 相同。
+    fn forbidden(&self) -> Response;
+
+    /// HTML 401：已注册错误页则渲染，否则与 `Err(AppError::Unauthenticated)` 相同。
+    fn unauthorized(&self) -> Response;
+
+    /// 任意状态的协商错误响应。JSON 走 `{ error, message, errors }`；HTML 优先自定义错误页。
+    fn error_response(&self, status: StatusCode, message: impl AsRef<str>) -> Response;
 }
 
 impl Controller for Request {
@@ -181,6 +193,35 @@ impl Controller for Request {
 
     fn upload_offset(&self, path: impl AsRef<Path>) -> Response {
         transfer::upload_status(path)
+    }
+
+    fn not_found(&self) -> Response {
+        crate::core::error::AppError::NotFound.into_response_for(self)
+    }
+
+    fn forbidden(&self) -> Response {
+        crate::core::error::AppError::Forbidden.into_response_for(self)
+    }
+
+    fn unauthorized(&self) -> Response {
+        crate::core::error::AppError::Unauthenticated.into_response_for(self)
+    }
+
+    fn error_response(&self, status: StatusCode, message: impl AsRef<str>) -> Response {
+        let message = message.as_ref();
+        if crate::core::error::wants_json(self) {
+            return crate::core::error::json_error(
+                status,
+                message,
+                std::collections::HashMap::from([("_".to_string(), message.to_string())]),
+            );
+        }
+        if let Some(custom) =
+            crate::core::error_pages::ErrorPages::try_render(self, status.as_u16(), message)
+        {
+            return custom;
+        }
+        crate::core::error::html_error_document(status, message)
     }
 }
 

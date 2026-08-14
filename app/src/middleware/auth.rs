@@ -13,9 +13,8 @@
 //!     .register();
 //! ```
 
-use namix::prelude::*;
+use crate::prelude::*;
 
-use crate::route;
 use crate::services::session::{session_id_from, LoginUser, SessionService};
 
 /// 必须已登录；否则跳转登录页。
@@ -24,14 +23,14 @@ use crate::services::session::{session_id_from, LoginUser, SessionService};
 pub async fn require_login(mut req: Request, next: Next) -> Response {
     if req.get::<LoginUser>().is_none() {
         let Some(id) = session_id_from(&req) else {
-            return req.redirect_guest_to(route::main::login);
+            return req.redirect_guest_to(AppRoute::Login);
         };
         match SessionService::new().resolve(&id) {
             Ok(Some(user)) => {
                 namix::set_user_subject(&mut req, user.id);
                 req.set(user);
             }
-            Ok(None) => return req.redirect_guest_to(route::main::login),
+            Ok(None) => return req.redirect_guest_to(AppRoute::Login),
             Err(error) => return error.into_response_for(&req),
         };
     }
@@ -65,16 +64,37 @@ pub async fn require_guest(mut req: Request, next: Next) -> Response {
 /// 必须为 VIP（依赖上游已注入 [`LoginUser`]，请先挂 `require_login`）。
 pub async fn require_vip(req: Request, next: Next) -> Response {
     let Some(user) = req.get::<LoginUser>() else {
-        return req.redirect_guest_to(route::main::login);
+        return req.redirect_guest_to(AppRoute::Login);
     };
 
     if !user.is_vip {
-        return Response::new(
+        return req.error_response(
             namix::http::StatusCode::FORBIDDEN,
-            ContentType::Text,
             "VIP only — ask an admin to grant is_vip",
         );
     }
 
+    next.run(req).await
+}
+
+/// 必须为 admin 角色（或拥有 `admin.access`）。
+pub async fn require_admin(req: Request, next: Next) -> Response {
+    let Some(user) = req.get::<LoginUser>() else {
+        return req.redirect_guest_to(AppRoute::Login);
+    };
+    if user.role != "admin" && !namix::role_allows(&user.role, "admin.access") {
+        return req.error_response(namix::http::StatusCode::FORBIDDEN, "admin only");
+    }
+    next.run(req).await
+}
+
+/// 邮箱已验证。示例主路径不挂此中间件，避免卡住演示。
+pub async fn require_verified(req: Request, next: Next) -> Response {
+    let Some(user) = req.get::<LoginUser>() else {
+        return req.redirect_guest_to(AppRoute::Login);
+    };
+    if !user.email_verified {
+        return req.redirect(AppRoute::Me.href());
+    }
     next.run(req).await
 }

@@ -68,6 +68,14 @@ ops/deploy-release.sh 1.0.1
 
 所有静态资源位于版本目录；旧目录保留，因此已经打开页面引用的带哈希资源不会在切换时 404。
 
+`nx build` 成功只说明版本目录写出来了，**不能**当成浏览器能加载 JS。HTML 写死 `/build/…`、反代只转发 `/lr*`、Vite `base` 与运行时前缀不一致、或进程找不到 `public/build` 时，页面 200 但 Island 不水合。本地用仓库脚本在 `/tmp` 里拉真实 HTML，并把 JS/CSS/WASM 全部 GET 一遍（含子路径 `/lr`）：
+
+```bash
+ops/smoke-nx.sh
+```
+
+脚本会 `nx new` 一份 lean 脚手架做编译自检，再搭假 `dist/0.0.0-smoke` 起示例应用（不覆盖仓库已有 `dist/<semver>`，也不部署）。`KEEP_WORKDIR=1` 可保留临时目录；`SKIP_NEW=1` / `SKIP_RELEASE=1` 可只跑其中一轨。默认不进 GitHub Actions（完整 `nx new` + npm + 起进程过重）；需要时再加 nightly。
+
 ## 回滚与清理
 
 ```bash

@@ -16,17 +16,22 @@ impl UsersSeeder {
 
         let svc = UserService::new();
         let alice = svc
-            .register("alice", "Secret1!")
+            .register("alice", "Secret1!", "alice@namix.local")
             .await
             .map_err(|e| toasty::Error::from_args(format_args!("{e}")))?;
-        // alice = VIP 示范账号（bob 普通用户）
         svc.set_vip(alice.id, true)
             .await
             .map_err(|e| toasty::Error::from_args(format_args!("{e}")))?;
-        svc.register("bob", "Secret1!")
+        svc.set_role(alice.id, "admin")
             .await
             .map_err(|e| toasty::Error::from_args(format_args!("{e}")))?;
-        namix::log::info!("seeded users: alice (vip), bob (password Secret1!)");
+        svc.mark_email_verified(alice.id)
+            .await
+            .map_err(|e| toasty::Error::from_args(format_args!("{e}")))?;
+        svc.register("bob", "Secret1!", "bob@namix.local")
+            .await
+            .map_err(|e| toasty::Error::from_args(format_args!("{e}")))?;
+        namix::log::info!("seeded users: alice (admin/vip), bob (password Secret1!)");
         Ok(())
     }
 }

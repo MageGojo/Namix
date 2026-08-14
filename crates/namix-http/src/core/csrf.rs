@@ -82,6 +82,7 @@ impl CsrfProtection {
         let cookie_token = req.cookie(&self.config.cookie_name).map(str::to_string);
         let token = cookie_token.clone().unwrap_or_else(new_token);
         req.set(CsrfToken(token.clone()));
+        req.set(self.config.clone());
 
         if websocket_requires_same_origin(&req) && !origin_allowed(&req, &self.config) {
             return rejected(&req);
@@ -107,11 +108,16 @@ impl CsrfProtection {
 
 /// Render the hidden input required by a classic HTML form.
 pub fn hidden_field(req: &Request) -> String {
-    let value = req
-        .get::<CsrfToken>()
-        .map(CsrfToken::as_str)
-        .unwrap_or_default();
-    format!("<input type=\"hidden\" name=\"_csrf\" value=\"{value}\">")
+    let field = req
+        .get::<CsrfConfig>()
+        .map(|config| config.form_field.as_str())
+        .unwrap_or("_csrf");
+    let value = token(req).unwrap_or_default();
+    format!(
+        r#"<input type="hidden" name="{}" value="{}">"#,
+        html_attr(field),
+        html_attr(value)
+    )
 }
 
 /// Return the current token for templates which render their own input.
@@ -203,7 +209,12 @@ fn token_matches(req: &Request, config: &CsrfConfig, expected: &str) -> bool {
     let supplied = req
         .header(&config.header_name)
         .map(str::to_string)
-        .or_else(|| form_value(req.body_str(), &config.form_field));
+        .or_else(|| form_value(req.body_str(), &config.form_field))
+        .or_else(|| {
+            req.form_input(&config.form_field)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
     supplied.is_some_and(|value| constant_time_eq(expected.as_bytes(), value.as_bytes()))
 }
 
@@ -232,6 +243,20 @@ fn new_token() -> String {
         .iter()
         .map(|byte| ALPHABET[usize::from(byte & 0x3f)] as char)
         .collect()
+}
+
+fn html_attr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn rejected(req: &Request) -> Response {
@@ -414,5 +439,27 @@ mod tests {
             )
             .await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn hidden_field_uses_configured_form_field_name() {
+        let mut request = req(Method::GET, &[("host", "app.test")], "");
+        request.set(CsrfToken("abc".into()));
+        request.set(CsrfConfig {
+            form_field: "csrf_token".into(),
+            ..CsrfConfig::default()
+        });
+        let html = hidden_field(&request);
+        assert!(html.contains(r#"name="csrf_token""#));
+        assert!(html.contains(r#"value="abc""#));
+        assert!(!html.contains(r#"name="_csrf""#));
+    }
+
+    #[test]
+    fn request_csrf_token_reads_installed_token() {
+        let mut request = req(Method::GET, &[("host", "app.test")], "");
+        assert_eq!(request.csrf_token(), "");
+        request.set(CsrfToken("tok-1".into()));
+        assert_eq!(request.csrf_token(), "tok-1");
     }
 }
